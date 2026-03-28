@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,700;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", serif;
+}
+
+/* 
+  Tailwind v4 Dark Mode Strategy
+  This overrides the default media-query based dark variant 
+  to support the .dark class on the html element.
+*/
+@variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-[#F8F7F4] text-[#1A1A1A] font-sans antialiased transition-colors duration-300;
+}
+
+/* Ensure the body follows the theme if not handled by components */
+.dark body {
+  background-color: #121212;
+  color: #E5E5E1;
+}

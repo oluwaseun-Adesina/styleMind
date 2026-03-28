@@ -1,0 +1,179 @@
+import { Type } from '@google/genai';
+import { getAI } from '../config/ai';
+import { ClothingItem, ItemAnalysis } from '../../../shared/types';
+
+export async function generateOutfitSuggestion(
+  prompt: string,
+  wardrobe: ClothingItem[],
+  weatherInfo: any,
+  lockedItemId?: string | null
+) {
+  const safeWardrobe = wardrobe.filter((item): item is ClothingItem => {
+    return Boolean(
+      item &&
+        typeof item.id === 'string' &&
+        typeof item.name === 'string' &&
+        typeof item.color === 'string' &&
+        ['top', 'bottom', 'shoes', 'accessory'].includes(item.type) &&
+        ['casual', 'smart casual', 'formal'].includes(item.formality)
+    );
+  });
+
+  if (!safeWardrobe.length) {
+    throw new Error('Wardrobe must include at least one valid item.');
+  }
+
+  const wardrobeStr = safeWardrobe
+    .map((item) => `- ${item.name} (${item.color}, ${item.type}, ${item.formality})`)
+    .join('\n');
+
+  const weatherContext = weatherInfo 
+    ? `CURRENT WEATHER in ${weatherInfo.city}: ${weatherInfo.temp}°C, ${weatherInfo.description}.`
+    : '';
+
+  const lockedItem = safeWardrobe.find(i => i.id === lockedItemId);
+  const lockedContext = lockedItem 
+    ? `USER MUST WEAR THIS ITEM: ${lockedItem.name} (${lockedItem.color}, ${lockedItem.type}, ${lockedItem.formality}). Build the rest of the outfit around it.`
+    : '';
+
+  const systemInstruction = `
+    You are FitPick, an expert AI personal stylist.
+    Your job is to suggest complete outfit combinations exclusively from the user's own wardrobe.
+
+    ${weatherContext}
+    ${lockedContext}
+
+    WARDROBE:
+    ${wardrobeStr}
+
+    BEHAVIOR:
+    1. Analyze the wardrobe and suggest the best outfit for the prompt.
+    2. Suggest a COMPLETE outfit: top + bottom + shoes + accessory.
+    3. ONLY use items from the provided wardrobe.
+    4. ${weatherInfo ? 'CRITICAL: Ensure the outfit is appropriate for the current weather.' : 'Explain WHY you picked each item.'}
+    5. Explain WHY you picked each item.
+    6. If the wardrobe is too limited, flag what is missing.
+    7. Keep tone friendly, confident, and stylish.
+
+    OUTPUT FORMAT:
+    You must return a JSON object matching this schema:
+    {
+      "occasion": "string",
+      "top": { "name": "string", "reason": "string" },
+      "bottom": { "name": "string", "reason": "string" },
+      "shoes": { "name": "string", "reason": "string" },
+      "accessory": { "name": "string", "reason": "string" },
+      "stylistNote": "string",
+      "wardrobeGap": "string (optional)",
+      "wardrobeGapSearchTerm": "string (optional, a highly generic 3-4 word search term for shopping)"
+    }
+  `;
+
+  const response = await getAI().models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: prompt,
+    config: {
+      systemInstruction,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          occasion: { type: Type.STRING },
+          top: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              reason: { type: Type.STRING },
+            },
+            required: ['name', 'reason'],
+          },
+          bottom: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              reason: { type: Type.STRING },
+            },
+            required: ['name', 'reason'],
+          },
+          shoes: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              reason: { type: Type.STRING },
+            },
+            required: ['name', 'reason'],
+          },
+          accessory: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              reason: { type: Type.STRING },
+            },
+            required: ['name', 'reason'],
+          },
+          stylistNote: { type: Type.STRING },
+          wardrobeGap: { type: Type.STRING },
+          wardrobeGapSearchTerm: { type: Type.STRING },
+        },
+        required: ['occasion', 'top', 'bottom', 'shoes', 'accessory', 'stylistNote'],
+      },
+    },
+  });
+
+  return JSON.parse(response.text || '{}');
+}
+
+export async function analyzeItemImage(imageBase64: string, mimeType: string, userHint?: string) {
+  const prompt = `
+    You are an assistant that helps classify clothing items from a wardrobe photo.
+    Identify ALL distinct clothing items visible in the image.
+    For each item, infer the most likely details.
+
+    Return a JSON object with an "items" array containing:
+    - name: a clear clothing item name
+    - color: the dominant color or color combination
+    - type: one of top, bottom, shoes, accessory
+    - formality: one of casual, smart casual, formal
+    - notes: a short note about any uncertainty or useful detail
+
+    ${userHint ? `User hint: ${userHint}` : ''}
+  `;
+
+  const response = await getAI().models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: [
+      {
+        inlineData: {
+          mimeType,
+          data: imageBase64,
+        },
+      },
+      { text: prompt },
+    ],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          items: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                color: { type: Type.STRING },
+                type: { type: Type.STRING },
+                formality: { type: Type.STRING },
+                notes: { type: Type.STRING },
+              },
+              required: ['name', 'color', 'type', 'formality', 'notes'],
+            }
+          }
+        },
+        required: ['items'],
+      },
+    },
+  });
+
+  return JSON.parse(response.text || '{"items": []}');
+}

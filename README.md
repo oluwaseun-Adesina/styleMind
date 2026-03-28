@@ -10,11 +10,22 @@ View your app in AI Studio: https://ai.studio/apps/7bccceb6-e65d-489e-86d5-61766
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
-
+**Prerequisites:** Node.js
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
+2. Configure the web app in [`apps/web/.env.example`](apps/web/.env.example) or your shell:
+   `VITE_API_BASE_URL=http://localhost:8787`
+3. Configure the backend in [`backend/.env.example`](backend/.env.example) or your shell:
+   `GEMINI_API_KEY=...`
+4. Start the backend:
+   `npm run dev:backend`
+5. In a second terminal, start the web app:
    `npm run dev`
+
+The repo now follows a simple monorepo layout:
+- [`apps/web`](apps/web)
+- [`apps/mobile`](apps/mobile)
+- [`backend`](backend)
+
+The backend exposes `POST /api/outfit-suggestion`, and the web app calls it through `VITE_API_BASE_URL` while mobile uses `EXPO_PUBLIC_API_BASE_URL`.
