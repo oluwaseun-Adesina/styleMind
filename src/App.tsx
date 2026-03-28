@@ -10,34 +10,40 @@ import {
   Briefcase,
   ChevronRight,
   Loader2,
-  X
+  X,
+  LogIn,
+  LogOut,
+  User as UserIcon
 } from 'lucide-react';
 import { ClothingItem, OutfitSuggestion, ItemType, Formality } from './types';
 import { getOutfitSuggestion } from './services/geminiService';
-
-const INITIAL_WARDROBE: ClothingItem[] = [
-  { id: '1', name: 'White Oxford button-down shirt', color: 'White', type: 'top', formality: 'formal' },
-  { id: '2', name: 'Navy blue polo shirt', color: 'Navy', type: 'top', formality: 'smart casual' },
-  { id: '3', name: 'Black graphic tee', color: 'Black', type: 'top', formality: 'casual' },
-  { id: '4', name: 'Olive green linen shirt', color: 'Olive', type: 'top', formality: 'smart casual' },
-  { id: '5', name: 'Dark navy slim-fit chinos', color: 'Navy', type: 'bottom', formality: 'smart casual' },
-  { id: '6', name: 'Black formal trousers', color: 'Black', type: 'bottom', formality: 'formal' },
-  { id: '7', name: 'Blue denim jeans', color: 'Blue', type: 'bottom', formality: 'casual' },
-  { id: '8', name: 'Khaki shorts', color: 'Khaki', type: 'bottom', formality: 'casual' },
-  { id: '9', name: 'Black leather Oxford shoes', color: 'Black', type: 'shoes', formality: 'formal' },
-  { id: '10', name: 'White sneakers', color: 'White', type: 'shoes', formality: 'casual' },
-  { id: '11', name: 'Brown loafers', color: 'Brown', type: 'shoes', formality: 'smart casual' },
-  { id: '12', name: 'Black leather belt', color: 'Black', type: 'accessory', formality: 'formal' },
-  { id: '13', name: 'Silver watch', color: 'Silver', type: 'accessory', formality: 'smart casual' },
-  { id: '14', name: 'Sunglasses', color: 'Black', type: 'accessory', formality: 'casual' },
-];
+import { auth, db, googleProvider } from './firebase';
+import { 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  User 
+} from 'firebase/auth';
+import { 
+  collection, 
+  query, 
+  where, 
+  onSnapshot, 
+  addDoc, 
+  deleteDoc, 
+  doc,
+  getDocFromServer
+} from 'firebase/firestore';
 
 export default function App() {
-  const [wardrobe, setWardrobe] = useState<ClothingItem[]>(INITIAL_WARDROBE);
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [wardrobe, setWardrobe] = useState<ClothingItem[]>([]);
   const [prompt, setPrompt] = useState('');
   const [suggestion, setSuggestion] = useState<OutfitSuggestion | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isAddingItem, setIsAddingItem] = useState(false);
+  const [isWardrobeOpen, setIsWardrobeOpen] = useState(false);
 
   // New item form state
   const [newItem, setNewItem] = useState<Partial<ClothingItem>>({
@@ -45,8 +51,69 @@ export default function App() {
     formality: 'casual'
   });
 
+  // Auth listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Firestore listener
+  useEffect(() => {
+    if (!user) {
+      setWardrobe([]);
+      return;
+    }
+
+    const q = query(collection(db, 'wardrobes'), where('uid', '==', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id
+      })) as ClothingItem[];
+      setWardrobe(items);
+    }, (error) => {
+      console.error("Firestore Error: ", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Test connection
+  useEffect(() => {
+    async function testConnection() {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if(error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration. ");
+        }
+      }
+    }
+    testConnection();
+  }, []);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Login failed", error);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setSuggestion(null);
+    } catch (error) {
+      console.error("Logout failed", error);
+    }
+  };
+
   const handleGetSuggestion = async () => {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || !user) return;
     setIsLoading(true);
     try {
       const res = await getOutfitSuggestion(wardrobe, prompt);
@@ -58,36 +125,129 @@ export default function App() {
     }
   };
 
-  const addItem = () => {
-    if (newItem.name && newItem.color) {
-      const item: ClothingItem = {
-        id: Math.random().toString(36).substr(2, 9),
-        name: newItem.name,
-        color: newItem.color,
-        type: newItem.type as ItemType,
-        formality: newItem.formality as Formality,
-      };
-      setWardrobe([...wardrobe, item]);
-      setNewItem({ type: 'top', formality: 'casual' });
-      setIsAddingItem(false);
+  const addItem = async () => {
+    if (newItem.name && newItem.color && user) {
+      try {
+        const itemData = {
+          id: Math.random().toString(36).substr(2, 9),
+          name: newItem.name,
+          color: newItem.color,
+          type: newItem.type as ItemType,
+          formality: newItem.formality as Formality,
+          uid: user.uid
+        };
+        await addDoc(collection(db, 'wardrobes'), itemData);
+        setNewItem({ type: 'top', formality: 'casual' });
+        setIsAddingItem(false);
+      } catch (error) {
+        console.error("Failed to add item", error);
+      }
     }
   };
 
-  const removeItem = (id: string) => {
-    setWardrobe(wardrobe.filter(i => i.id !== id));
+  const removeItem = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'wardrobes', id));
+    } catch (error) {
+      console.error("Failed to remove item", error);
+    }
   };
 
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#F8F7F4]">
+        <Loader2 className="animate-spin text-[#1A1A1A]" size={40} />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#F8F7F4] p-8">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center max-w-md"
+        >
+          <h1 className="font-serif text-6xl italic mb-6">FitPick</h1>
+          <p className="text-xl text-[#8E8E8A] mb-12 leading-relaxed">
+            Your personal AI stylist. Organize your wardrobe and get perfect outfit suggestions for any occasion.
+          </p>
+          <button 
+            onClick={handleLogin}
+            className="flex items-center gap-3 bg-[#1A1A1A] text-white px-8 py-4 rounded-2xl font-medium text-lg hover:opacity-90 transition-all shadow-xl"
+          >
+            <LogIn size={24} />
+            Sign in with Google
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen flex flex-col lg:flex-row">
-      {/* Sidebar: Wardrobe Management */}
-      <aside className="w-full lg:w-96 bg-white border-r border-[#E5E5E1] p-8 overflow-y-auto max-h-screen lg:sticky lg:top-0">
-        <div className="flex items-center justify-between mb-8">
-          <h1 className="font-serif text-3xl italic">StyleMind</h1>
+    <div className="min-h-screen flex flex-col lg:flex-row bg-[#F8F7F4]">
+      {/* Mobile Header */}
+      <div className="lg:hidden flex items-center justify-between p-6 bg-white border-b border-[#E5E5E1] sticky top-0 z-30">
+        <h1 className="font-serif text-2xl italic">FitPick</h1>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={() => setIsWardrobeOpen(!isWardrobeOpen)}
+            className="px-4 py-2 rounded-xl border border-[#E5E5E1] text-sm font-medium hover:bg-[#FBFBFA]"
+          >
+            {isWardrobeOpen ? 'Close Wardrobe' : 'View Wardrobe'}
+          </button>
           <button 
             onClick={() => setIsAddingItem(true)}
-            className="p-2 rounded-full bg-[#1A1A1A] text-white hover:opacity-90 transition-opacity"
+            className="w-10 h-10 flex items-center justify-center rounded-full bg-[#1A1A1A] text-white"
           >
             <Plus size={20} />
+          </button>
+        </div>
+      </div>
+
+      {/* Sidebar: Wardrobe Management */}
+      <aside className={`
+        w-full lg:w-96 bg-white border-r border-[#E5E5E1] p-8 overflow-y-auto 
+        ${isWardrobeOpen ? 'block' : 'hidden lg:block'}
+        lg:max-h-screen lg:sticky lg:top-0 z-20
+      `}>
+        <div className="hidden lg:flex items-center justify-between mb-8">
+          <h1 className="font-serif text-3xl italic">FitPick</h1>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={() => setIsAddingItem(true)}
+              className="w-11 h-11 flex items-center justify-center rounded-full bg-[#1A1A1A] text-white hover:opacity-90 transition-opacity"
+            >
+              <Plus size={20} />
+            </button>
+            <button 
+              onClick={handleLogout}
+              className="w-11 h-11 flex items-center justify-center rounded-full border border-[#E5E5E1] text-[#8E8E8A] hover:text-red-500 transition-all"
+              title="Logout"
+            >
+              <LogOut size={20} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 mb-8 p-4 bg-[#FBFBFA] rounded-2xl border border-[#E5E5E1]">
+          {user.photoURL ? (
+            <img src={user.photoURL} alt={user.displayName || ''} className="w-10 h-10 rounded-full" referrerPolicy="no-referrer" />
+          ) : (
+            <div className="w-10 h-10 rounded-full bg-[#E5E5E1] flex items-center justify-center">
+              <UserIcon size={20} className="text-[#8E8E8A]" />
+            </div>
+          )}
+          <div className="overflow-hidden">
+            <p className="text-sm font-medium truncate">{user.displayName}</p>
+            <p className="text-[10px] text-[#8E8E8A] truncate">{user.email}</p>
+          </div>
+          <button 
+            onClick={handleLogout}
+            className="lg:hidden ml-auto p-2 text-[#8E8E8A]"
+          >
+            <LogOut size={18} />
           </button>
         </div>
 
@@ -116,6 +276,11 @@ export default function App() {
                     </button>
                   </div>
                 ))}
+                {wardrobe.filter(i => i.type === type).length === 0 && (
+                  <p className="text-xs text-[#8E8E8A] italic p-3 border border-dashed border-[#E5E5E1] rounded-xl text-center">
+                    No {type}s added
+                  </p>
+                )}
               </div>
             </section>
           ))}
@@ -123,25 +288,30 @@ export default function App() {
       </aside>
 
       {/* Main Content: Stylist Interface */}
-      <main className="flex-1 p-8 lg:p-16 max-w-4xl mx-auto w-full">
+      <main className="flex-1 p-6 lg:p-16 max-w-4xl mx-auto w-full">
         <div className="mb-12">
-          <h2 className="text-4xl font-light tracking-tight mb-4">What's the occasion?</h2>
+          <h2 className="text-3xl lg:text-4xl font-light tracking-tight mb-4">What's the occasion?</h2>
           <div className="relative">
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="e.g. I have a job interview at a tech startup tomorrow..."
-              className="w-full bg-white border border-[#E5E5E1] rounded-2xl p-6 text-lg focus:outline-none focus:ring-2 focus:ring-[#1A1A1A]/5 min-h-[120px] resize-none shadow-sm"
+              className="w-full bg-white border border-[#E5E5E1] rounded-2xl p-5 lg:p-6 text-base lg:text-lg focus:outline-none focus:ring-2 focus:ring-[#1A1A1A]/5 min-h-[140px] resize-none shadow-sm"
             />
             <button
               onClick={handleGetSuggestion}
-              disabled={isLoading || !prompt.trim()}
-              className="absolute bottom-4 right-4 bg-[#1A1A1A] text-white px-6 py-3 rounded-xl flex items-center gap-2 font-medium hover:opacity-90 disabled:opacity-50 transition-all"
+              disabled={isLoading || !prompt.trim() || wardrobe.length === 0}
+              className="mt-4 lg:absolute lg:bottom-4 lg:right-4 w-full lg:w-auto bg-[#1A1A1A] text-white px-8 py-4 rounded-xl flex items-center justify-center gap-2 font-medium hover:opacity-90 disabled:opacity-50 transition-all shadow-lg"
             >
               {isLoading ? <Loader2 className="animate-spin" size={20} /> : <Sparkles size={20} />}
               Get Suggestion
             </button>
           </div>
+          {wardrobe.length === 0 && (
+            <p className="mt-4 text-sm text-red-500 flex items-center gap-2">
+              <X size={14} /> Add items to your wardrobe first to get suggestions.
+            </p>
+          )}
         </div>
 
         <AnimatePresence mode="wait">

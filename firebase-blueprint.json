@@ -1,0 +1,24 @@
+{
+  "entities": {
+    "ClothingItem": {
+      "title": "Clothing Item",
+      "description": "An item in the user's wardrobe.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "color": { "type": "string" },
+        "type": { "type": "string", "enum": ["top", "bottom", "shoes", "accessory"] },
+        "formality": { "type": "string", "enum": ["casual", "smart casual", "formal"] },
+        "uid": { "type": "string" }
+      },
+      "required": ["id", "name", "color", "type", "formality", "uid"]
+    }
+  },
+  "firestore": {
+    "/wardrobes/{itemId}": {
+      "schema": "ClothingItem",
+      "description": "Collection of clothing items for all users."
+    }
+  }
+}

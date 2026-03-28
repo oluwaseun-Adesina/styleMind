@@ -1,0 +1,51 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: wardrobes
+    // Document ID: itemId
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required, 1-100 chars)
+    //   - color: string (required, 1-50 chars)
+    //   - type: string (required, enum: top, bottom, shoes, accessory)
+    //   - formality: string (required, enum: casual, smart casual, formal)
+    //   - uid: string (required, must match owner)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isAuthenticated() && request.auth.uid == uid;
+    }
+
+    function isValidClothingItem(data) {
+      return data.keys().hasAll(['id', 'name', 'color', 'type', 'formality', 'uid']) &&
+             data.id is string &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.color is string && data.color.size() > 0 && data.color.size() <= 50 &&
+             data.type in ['top', 'bottom', 'shoes', 'accessory'] &&
+             data.formality in ['casual', 'smart casual', 'formal'] &&
+             data.uid is string;
+    }
+
+    match /wardrobes/{itemId} {
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow create: if isAuthenticated() && 
+                      isValidClothingItem(request.resource.data) && 
+                      request.resource.data.uid == request.auth.uid;
+      allow update: if isAuthenticated() && 
+                      resource.data.uid == request.auth.uid &&
+                      isValidClothingItem(request.resource.data) &&
+                      request.resource.data.uid == resource.data.uid;
+      allow delete: if isAuthenticated() && resource.data.uid == request.auth.uid;
+    }
+  }
+}

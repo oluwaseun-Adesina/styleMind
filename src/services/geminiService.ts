@@ -15,7 +15,7 @@ export async function getOutfitSuggestion(
     .join("\n");
 
   const systemInstruction = `
-    You are StyleMind, an expert AI personal stylist. 
+    You are FitPick, an expert AI personal stylist. 
     Your job is to suggest complete outfit combinations exclusively from the user's own wardrobe.
 
     WARDROBE:
