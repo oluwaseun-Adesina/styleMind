@@ -10,6 +10,7 @@
     "dev:mobile": "npm --prefix apps/mobile start",
     "build:backend": "npm --prefix backend run build",
     "build:mobile:android": "npm --prefix apps/mobile run build:android",
+    "build:mobile:android:local": "npm --prefix apps/mobile run build:android:local",
     "build:mobile:ios": "npm --prefix apps/mobile run build:ios",
     "build": "npm run build:web && npm run build:backend",
     "build:web": "vite build --config apps/web/vite.config.ts",
