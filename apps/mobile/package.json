@@ -10,7 +10,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "build:android": "eas build --platform android",
-    "build:android:local": "eas build --platform android --profile local --local",
+    "build:android:local": "bash ./scripts/build-android-local.sh",
     "build:ios": "eas build --platform ios",
     "build:ios:local": "eas build --platform ios --profile local --local"
   },

@@ -37,6 +37,7 @@ export const analyzeItem = async (req: any, res: Response) => {
     res.json(payload);
   } catch (error) {
     console.error('Failed to analyze item image', error);
-    res.status(500).json({ error: 'Failed to analyze item image.' });
+    const message = error instanceof Error ? error.message : 'Failed to analyze item image.';
+    res.status(500).json({ error: message });
   }
 };

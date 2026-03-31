@@ -1,6 +1,59 @@
-import { Type } from '@google/genai';
+import { Type, createPartFromBase64, createPartFromText } from '@google/genai';
 import { getAI } from '../config/ai';
 import { ClothingItem, ItemAnalysis } from '../../../shared/types';
+
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || GEMINI_MODEL;
+const VALID_ITEM_TYPES = ['top', 'bottom', 'shoes', 'accessory'] as const;
+const VALID_FORMALITIES = ['casual', 'smart casual', 'formal'] as const;
+const SUPPORTED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
+const MAX_IMAGE_BASE64_CHARS = 4_500_000;
+
+const normalizeBase64ImageData = (imageBase64: string) => {
+  return imageBase64.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
+};
+
+const normalizeItemType = (value: unknown): ItemAnalysis['type'] => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return (VALID_ITEM_TYPES as readonly string[]).includes(normalized) ? (normalized as ItemAnalysis['type']) : 'accessory';
+};
+
+const normalizeFormality = (value: unknown): ItemAnalysis['formality'] => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return (VALID_FORMALITIES as readonly string[]).includes(normalized) ? (normalized as ItemAnalysis['formality']) : 'casual';
+};
+
+const normalizeAnalyzedItems = (payload: unknown): { items: ItemAnalysis[] } => {
+  const rawItems = Array.isArray((payload as { items?: unknown[] } | null)?.items)
+    ? (payload as { items: unknown[] }).items
+    : [];
+
+  return {
+    items: rawItems
+      .map((item) => {
+        if (!item || typeof item !== 'object') {
+          return null;
+        }
+
+        const candidate = item as Record<string, unknown>;
+        const name = String(candidate.name || '').trim();
+        const color = String(candidate.color || '').trim();
+
+        if (!name || !color) {
+          return null;
+        }
+
+        return {
+          name,
+          color,
+          type: normalizeItemType(candidate.type),
+          formality: normalizeFormality(candidate.formality),
+          notes: String(candidate.notes || '').trim(),
+        };
+      })
+      .filter((item): item is ItemAnalysis => Boolean(item)),
+  };
+};
 
 export async function generateOutfitSuggestion(
   prompt: string,
@@ -70,7 +123,7 @@ export async function generateOutfitSuggestion(
   `;
 
   const response = await getAI().models.generateContent({
-    model: 'gemini-3-flash-preview',
+    model: GEMINI_MODEL,
     contents: prompt,
     config: {
       systemInstruction,
@@ -124,6 +177,21 @@ export async function generateOutfitSuggestion(
 }
 
 export async function analyzeItemImage(imageBase64: string, mimeType: string, userHint?: string) {
+  const normalizedImageBase64 = normalizeBase64ImageData(imageBase64);
+  const normalizedMimeType = String(mimeType || '').toLowerCase().trim();
+
+  if (!SUPPORTED_IMAGE_MIME_TYPES.includes(normalizedMimeType)) {
+    throw new Error('Unsupported image type. Please use a JPG, PNG, or WebP photo.');
+  }
+
+  if (!normalizedImageBase64) {
+    throw new Error('Image data is empty. Please try another photo.');
+  }
+
+  if (normalizedImageBase64.length > MAX_IMAGE_BASE64_CHARS) {
+    throw new Error('Image is too large to scan. Please use a smaller photo.');
+  }
+
   const prompt = `
     You are an assistant that helps classify clothing items from a wardrobe photo.
     Identify ALL distinct clothing items visible in the image.
@@ -140,16 +208,8 @@ export async function analyzeItemImage(imageBase64: string, mimeType: string, us
   `;
 
   const response = await getAI().models.generateContent({
-    model: 'gemini-3-flash-preview',
-    contents: [
-      {
-        inlineData: {
-          mimeType,
-          data: imageBase64,
-        },
-      },
-      { text: prompt },
-    ],
+    model: GEMINI_IMAGE_MODEL,
+    contents: [createPartFromBase64(normalizedImageBase64, normalizedMimeType), createPartFromText(prompt)],
     config: {
       responseMimeType: 'application/json',
       responseSchema: {
@@ -175,5 +235,11 @@ export async function analyzeItemImage(imageBase64: string, mimeType: string, us
     },
   });
 
-  return JSON.parse(response.text || '{"items": []}');
+  const payload = normalizeAnalyzedItems(JSON.parse(response.text || '{"items": []}'));
+
+  if (!payload.items.length) {
+    throw new Error('No clothing item was detected. Try a clearer photo with one item centered.');
+  }
+
+  return payload;
 }

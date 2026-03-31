@@ -26,6 +26,18 @@ import { ClothingItem, OutfitSuggestion, ItemType, Formality, ItemAnalysis } fro
 import { getOutfitSuggestion } from './services/geminiService';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8787';
+const AMAZON_ASSOCIATE_TAG = import.meta.env.VITE_AMAZON_ASSOCIATE_TAG?.trim();
+
+const buildAmazonAffiliateUrl = (searchTerm: string) => {
+  const url = new URL('https://www.amazon.com/s');
+  url.searchParams.set('k', searchTerm);
+
+  if (AMAZON_ASSOCIATE_TAG) {
+    url.searchParams.set('tag', AMAZON_ASSOCIATE_TAG);
+  }
+
+  return url.toString();
+};
 
 interface User {
   id: string;
@@ -192,6 +204,43 @@ export default function App() {
     localStorage.removeItem('user');
   };
 
+  const getUploadPayload = async (file: File) => {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('Could not read the selected image.'));
+      reader.readAsDataURL(file);
+    });
+
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Could not process the selected image.'));
+      img.src = dataUrl;
+    });
+
+    const maxDimension = 1280;
+    const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.width * scale));
+    canvas.height = Math.max(1, Math.round(image.height * scale));
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Could not prepare the selected image.');
+    }
+
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.82);
+    const [, base64 = ''] = compressedDataUrl.split(',');
+
+    return {
+      base64,
+      mimeType: 'image/jpeg',
+    };
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !token) return;
@@ -201,15 +250,7 @@ export default function App() {
     setBulkItems([]);
 
     try {
-      const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve) => {
-        reader.onload = () => {
-          const result = reader.result as string;
-          resolve(result.split(',')[1]);
-        };
-      });
-      reader.readAsDataURL(file);
-      const base64 = await base64Promise;
+      const { base64, mimeType } = await getUploadPayload(file);
 
       const response = await fetch(`${API_BASE_URL}/api/analyze-item`, {
         method: 'POST',
@@ -217,10 +258,13 @@ export default function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({ imageBase64: base64, mimeType: file.type }),
+        body: JSON.stringify({ imageBase64: base64, mimeType }),
       });
 
-      if (!response.ok) throw new Error('Failed to analyze image');
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.error || 'Failed to analyze image');
+      }
 
       const data = await response.json();
       const items = data.items as ItemAnalysis[];
@@ -235,7 +279,7 @@ export default function App() {
         });
       }
     } catch (err) {
-      setScanError('Failed to analyze image. Please try again or enter manually.');
+      setScanError(err instanceof Error ? err.message : 'Failed to analyze image. Please try again or enter manually.');
       console.error(err);
     } finally {
       setIsScanning(false);
@@ -701,7 +745,7 @@ export default function App() {
                       </div>
                       {suggestion.wardrobeGapSearchTerm && (
                         <a 
-                          href={`https://www.amazon.com/s?k=${encodeURIComponent(suggestion.wardrobeGapSearchTerm)}`}
+                          href={buildAmazonAffiliateUrl(suggestion.wardrobeGapSearchTerm)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="px-6 py-3 bg-[#1A1A1A] dark:bg-white text-white dark:text-black text-xs font-bold uppercase tracking-widest rounded-xl hover:opacity-90 transition-all text-center"
