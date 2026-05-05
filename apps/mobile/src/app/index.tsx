@@ -17,7 +17,7 @@ import {
   Mail, Lock, Sun, Moon, LayoutGrid
 } from 'lucide-react-native';
 import { ClothingItem, OutfitSuggestion, ItemType, Formality, ItemAnalysis } from '../types';
-import { getOutfitSuggestion } from '../services/geminiService';
+import { getOutfitImage, getOutfitSuggestion } from '../services/geminiService';
 import { API_BASE_URL, ApiError, clearAuth, getToken, getUser, postJson, saveAuth } from '../firebase';
 import { MaxContentWidth } from '@/constants/theme';
 import { useGoogleAuth } from '@/providers/google-auth-provider';
@@ -76,6 +76,8 @@ export default function AppScreen() {
   const [savedOutfits, setSavedOutfits] = useState<(OutfitSuggestion & { id: string })[]>([]);
   const [prompt, setPrompt] = useState('');
   const [suggestion, setSuggestion] = useState<OutfitSuggestion | null>(null);
+  const [outfitImageUri, setOutfitImageUri] = useState('');
+  const [isGeneratingOutfitImage, setIsGeneratingOutfitImage] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isAddingItem, setIsAddingItem] = useState(false);
   const [itemMode, setItemMode] = useState<'manual' | 'photo'>('manual');
@@ -164,7 +166,8 @@ export default function AppScreen() {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.ok) {
-          const data = await res.json();
+          const responseJson = await res.json();
+          const data = responseJson?.data ?? responseJson;
           setWardrobe(data);
         }
       } catch (error) {
@@ -185,7 +188,8 @@ export default function AppScreen() {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.ok) {
-          const data = await res.json();
+          const responseJson = await res.json();
+          const data = responseJson?.data ?? responseJson;
           setSavedOutfits(data);
         }
       } catch (error) {
@@ -201,6 +205,7 @@ export default function AppScreen() {
     setToken(null);
     setUser(null);
     setSuggestion(null);
+    setOutfitImageUri('');
     setActiveTab('stylist');
   };
 
@@ -224,11 +229,27 @@ export default function AppScreen() {
 
       const res = await getOutfitSuggestion(wardrobe, prompt, token, lat, lon, lockedItemId);
       setSuggestion(res);
+      setOutfitImageUri('');
     } catch (error) {
       console.error("Failed to get suggestion", error);
       Alert.alert("Error", "Failed to generate suggestion.");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleGenerateOutfitImage = async () => {
+    if (!suggestion || !token) return;
+
+    setIsGeneratingOutfitImage(true);
+    try {
+      const result = await getOutfitImage(suggestion, token);
+      setOutfitImageUri(`data:${result.mimeType};base64,${result.imageBase64}`);
+    } catch (error) {
+      console.error("Failed to generate outfit image", error);
+      Alert.alert("Error", error instanceof Error ? error.message : "Failed to generate outfit image.");
+    } finally {
+      setIsGeneratingOutfitImage(false);
     }
   };
 
@@ -273,7 +294,8 @@ export default function AppScreen() {
         throw new Error(error?.error || 'Failed to analyze image.');
       }
 
-      const data = await response.json();
+      const responseJson = await response.json();
+      const data = responseJson?.data ?? responseJson;
       const items = data.items as ItemAnalysis[];
       
       if (items && items.length > 0) {
@@ -349,7 +371,8 @@ export default function AppScreen() {
         });
 
         if (res.ok) {
-          const addedItem = await res.json();
+          const responseJson = await res.json();
+          const addedItem = responseJson?.data ?? responseJson;
           setWardrobe([...wardrobe, addedItem]);
           
           if (bulkItems.length > 1) {
@@ -634,6 +657,38 @@ export default function AppScreen() {
                       </View>
                     ))}
                   </ScrollView>
+
+                  <View className="bg-white dark:bg-[#1E1E1E] p-5 rounded-3xl border border-[#E5E5E1] dark:border-gray-800 mb-5">
+                    <View className="flex-row items-center justify-between mb-4">
+                      <View className="flex-1 mr-4">
+                        <Text className="text-[10px] uppercase tracking-widest text-[#8E8E8A] font-bold mb-1">Visual Preview</Text>
+                        <Text className="text-[#555552] dark:text-gray-400">Generate a flat-lay image of this outfit.</Text>
+                      </View>
+                      <TouchableOpacity
+                        disabled={isGeneratingOutfitImage}
+                        onPress={handleGenerateOutfitImage}
+                        className="bg-[#1A1A1A] dark:bg-white px-4 py-3 rounded-xl flex-row items-center"
+                      >
+                        {isGeneratingOutfitImage ? (
+                          <ActivityIndicator color={nativeColorScheme === 'dark' ? '#000' : '#fff'} />
+                        ) : (
+                          <>
+                            <Sparkles color={nativeColorScheme === 'dark' ? '#000' : '#fff'} size={16} />
+                            <Text className="text-white dark:text-black font-medium ml-2">
+                              {outfitImageUri ? 'Regenerate' : 'Generate'}
+                            </Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                    {outfitImageUri ? (
+                      <Image
+                        source={{ uri: outfitImageUri }}
+                        className="w-full h-96 rounded-2xl bg-[#F8F7F4] dark:bg-[#2A2A2A]"
+                        resizeMode="contain"
+                      />
+                    ) : null}
+                  </View>
 
                   <View className="space-y-3 mb-5">
                     {[

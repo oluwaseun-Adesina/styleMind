@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type FormEvent, type ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Plus, 
@@ -23,10 +23,13 @@ import {
 } from 'lucide-react';
 import { useGoogleLogin } from '@react-oauth/google';
 import { ClothingItem, OutfitSuggestion, ItemType, Formality, ItemAnalysis } from './types';
-import { getOutfitSuggestion } from './services/geminiService';
+import { getOutfitImage, getOutfitSuggestion } from './services/geminiService';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8787';
 const AMAZON_ASSOCIATE_TAG = import.meta.env.VITE_AMAZON_ASSOCIATE_TAG?.trim();
+
+const IMAGE_MAX_DIMENSION = 1280;
+const IMAGE_JPEG_QUALITY = 0.82;
 
 const buildAmazonAffiliateUrl = (searchTerm: string) => {
   const url = new URL('https://www.amazon.com/s');
@@ -48,11 +51,14 @@ interface User {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
+  const [token, setToken] = useState<string | null>(sessionStorage.getItem('token'));
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [wardrobe, setWardrobe] = useState<ClothingItem[]>([]);
   const [prompt, setPrompt] = useState('');
   const [suggestion, setSuggestion] = useState<OutfitSuggestion | null>(null);
+  const [outfitImageUrl, setOutfitImageUrl] = useState('');
+  const [outfitImageError, setOutfitImageError] = useState('');
+  const [isGeneratingOutfitImage, setIsGeneratingOutfitImage] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isAddingItem, setIsAddingItem] = useState(false);
   const [isWardrobeOpen, setIsWardrobeOpen] = useState(false);
@@ -90,7 +96,10 @@ export default function App() {
 
   // Check initial auth state
   useEffect(() => {
-    const savedUser = localStorage.getItem('user');
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+
+    const savedUser = sessionStorage.getItem('user');
     if (savedUser && token) {
       setUser(JSON.parse(savedUser));
     }
@@ -110,7 +119,8 @@ export default function App() {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.ok) {
-          const data = await res.json();
+          const responseJson = await res.json();
+          const data = responseJson?.data ?? responseJson;
           setWardrobe(data);
         }
       } catch (error) {
@@ -131,7 +141,8 @@ export default function App() {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (res.ok) {
-          const data = await res.json();
+          const responseJson = await res.json();
+          const data = responseJson?.data ?? responseJson;
           setSavedOutfits(data);
         }
       } catch (error) {
@@ -152,7 +163,8 @@ export default function App() {
         });
         
         if (res.ok) {
-          const data = await res.json();
+          const responseJson = await res.json();
+          const data = responseJson?.data ?? responseJson;
           loginUser(data);
         }
       } catch (error) {
@@ -162,7 +174,7 @@ export default function App() {
     onError: (error) => console.error('Login Failed:', error)
   });
 
-  const handleEmailAuth = async (e: React.FormEvent) => {
+  const handleEmailAuth = async (e: FormEvent) => {
     e.preventDefault();
     if (!email || !password) return;
     setAuthError('');
@@ -176,11 +188,12 @@ export default function App() {
         body: JSON.stringify({ email, password }),
       });
 
-      const data = await res.json();
+      const responseJson = await res.json();
       if (res.ok) {
+        const data = responseJson?.data ?? responseJson;
         loginUser(data);
       } else {
-        setAuthError(data.error || 'Authentication failed');
+        setAuthError(responseJson?.error || 'Authentication failed');
       }
     } catch (error) {
       setAuthError('Server error. Please try again.');
@@ -192,16 +205,18 @@ export default function App() {
   const loginUser = (data: { token: string, user: User }) => {
     setToken(data.token);
     setUser(data.user);
-    localStorage.setItem('token', data.token);
-    localStorage.setItem('user', JSON.stringify(data.user));
+    sessionStorage.setItem('token', data.token);
+    sessionStorage.setItem('user', JSON.stringify(data.user));
   };
 
   const handleLogout = () => {
     setToken(null);
     setUser(null);
     setSuggestion(null);
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    setOutfitImageUrl('');
+    setOutfitImageError('');
+    sessionStorage.removeItem('token');
+    sessionStorage.removeItem('user');
   };
 
   const getUploadPayload = async (file: File) => {
@@ -219,8 +234,7 @@ export default function App() {
       img.src = dataUrl;
     });
 
-    const maxDimension = 1280;
-    const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+    const scale = Math.min(1, IMAGE_MAX_DIMENSION / Math.max(image.width, image.height));
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(image.width * scale));
     canvas.height = Math.max(1, Math.round(image.height * scale));
@@ -232,7 +246,7 @@ export default function App() {
 
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
-    const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.82);
+    const compressedDataUrl = canvas.toDataURL('image/jpeg', IMAGE_JPEG_QUALITY);
     const [, base64 = ''] = compressedDataUrl.split(',');
 
     return {
@@ -241,7 +255,7 @@ export default function App() {
     };
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !token) return;
 
@@ -266,7 +280,8 @@ export default function App() {
         throw new Error(error?.error || 'Failed to analyze image');
       }
 
-      const data = await response.json();
+      const responseJson = await response.json();
+      const data = responseJson?.data ?? responseJson;
       const items = data.items as ItemAnalysis[];
       
       if (items && items.length > 0) {
@@ -305,10 +320,28 @@ export default function App() {
 
       const res = await getOutfitSuggestion(wardrobe, prompt, token, lat, lon, lockedItemId);
       setSuggestion(res);
+      setOutfitImageUrl('');
+      setOutfitImageError('');
     } catch (error) {
       console.error("Failed to get suggestion", error);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleGenerateOutfitImage = async () => {
+    if (!suggestion || !token) return;
+
+    setIsGeneratingOutfitImage(true);
+    setOutfitImageError('');
+
+    try {
+      const result = await getOutfitImage(suggestion, token);
+      setOutfitImageUrl(`data:${result.mimeType};base64,${result.imageBase64}`);
+    } catch (error) {
+      setOutfitImageError(error instanceof Error ? error.message : 'Failed to generate outfit image.');
+    } finally {
+      setIsGeneratingOutfitImage(false);
     }
   };
 
@@ -351,7 +384,8 @@ export default function App() {
         });
 
         if (res.ok) {
-          const addedItem = await res.json();
+          const responseJson = await res.json();
+          const addedItem = responseJson?.data ?? responseJson;
           setWardrobe([...wardrobe, addedItem]);
           
           if (bulkItems.length > 1) {
@@ -705,6 +739,33 @@ export default function App() {
                         </div>
                       ))}
                     </div>
+                  </div>
+
+                  <div className="bg-white dark:bg-[#1E1E1E] border border-[#E5E5E1] dark:border-gray-800 rounded-[32px] p-6 shadow-sm">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
+                      <div>
+                        <h4 className="text-[10px] uppercase tracking-widest text-[#8E8E8A] font-bold mb-2">Visual Preview</h4>
+                        <p className="text-sm text-[#555552] dark:text-gray-400">Generate a flat-lay image of this outfit.</p>
+                      </div>
+                      <button
+                        onClick={handleGenerateOutfitImage}
+                        disabled={isGeneratingOutfitImage}
+                        className="px-6 py-3 rounded-xl bg-[#1A1A1A] dark:bg-white text-white dark:text-black text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+                      >
+                        {isGeneratingOutfitImage ? <Loader2 className="animate-spin" size={18} /> : <Sparkles size={18} />}
+                        {outfitImageUrl ? 'Regenerate Image' : 'Generate Image'}
+                      </button>
+                    </div>
+                    {outfitImageError && (
+                      <p className="mb-4 text-sm text-red-500">{outfitImageError}</p>
+                    )}
+                    {outfitImageUrl && (
+                      <img
+                        src={outfitImageUrl}
+                        alt={`Generated outfit preview for ${suggestion.occasion}`}
+                        className="w-full max-h-[680px] object-contain rounded-2xl bg-[#F8F7F4] dark:bg-[#2A2A2A]"
+                      />
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8">

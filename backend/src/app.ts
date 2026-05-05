@@ -1,21 +1,107 @@
 import express from 'express';
 import cors from 'cors';
-import authRoutes from './routes/authRoutes';
-import wardrobeRoutes from './routes/wardrobeRoutes';
-import lookbookRoutes from './routes/lookbookRoutes';
-import aiRoutes from './routes/aiRoutes';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import { errorHandler, notFoundHandler } from './utils/errorHandler.js';
+import authRoutes from './routes/authRoutes.js';
+import wardrobeRoutes from './routes/wardrobeRoutes.js';
+import lookbookRoutes from './routes/lookbookRoutes.js';
+import aiRoutes from './routes/aiRoutes.js';
 
 const app = express();
 
-app.use(cors());
-app.use(express.json({ limit: '25mb' }));
+// Trust proxy for rate limiting behind reverse proxy
+app.set('trust proxy', 1);
 
-// Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/wardrobes', wardrobeRoutes);
-app.use('/api/saved_outfits', lookbookRoutes);
-app.use('/api', aiRoutes);
+// Security headers
+app.use(helmet({
+  contentSecurityPolicy: false, // Disable CSP for API
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 
-app.get('/health', (_, res) => res.json({ ok: true }));
+// CORS configuration
+const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map(origin => origin.trim()).filter(Boolean) || [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:8081',
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+}));
+
+// Body parsing
+app.use(express.json({ limit: '6mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// Rate limiting
+const standardLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many requests, please try again later',
+  },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many authentication attempts, please try again later',
+  },
+});
+
+// Stricter rate limiting for AI endpoints (cost $)
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // Limit each IP to 10 AI requests per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'AI request limit exceeded, please try again later',
+  },
+});
+
+// Auth routes (stricter limit)
+app.use('/api/auth', authLimiter, authRoutes);
+
+// Wardrobe routes (standard limit)
+app.use('/api/wardrobes', standardLimiter, wardrobeRoutes);
+
+// Lookbook routes (standard limit)
+app.use('/api/saved_outfits', standardLimiter, lookbookRoutes);
+
+// AI routes (strict limit)
+app.use('/api', aiLimiter, aiRoutes);
+
+// Health check
+app.get('/health', (_, res) => {
+  res.json({ 
+    ok: true, 
+    timestamp: new Date().toISOString(),
+    version: process.env.npm_package_version || '1.0.0',
+  });
+});
+
+// 404 handler
+app.use(notFoundHandler);
+
+// Global error handler
+app.use(errorHandler);
 
 export default app;

@@ -1,5 +1,6 @@
 import * as WebBrowser from 'expo-web-browser';
 import * as Google from 'expo-auth-session/providers/google';
+import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 WebBrowser.maybeCompleteAuthSession();
@@ -36,7 +37,7 @@ export async function postJson<T>(path: string, body: unknown, timeoutMs = 30000
       throw new ApiError(data?.error || `Request failed with status ${response.status}.`, response.status);
     }
 
-    return data as T;
+    return (data && typeof data === 'object' && 'data' in data ? data.data : data) as T;
   } catch (error) {
     if (error instanceof ApiError) {
       throw error;
@@ -53,7 +54,18 @@ export async function postJson<T>(path: string, body: unknown, timeoutMs = 30000
 }
 
 export async function getToken() {
-  return await AsyncStorage.getItem('token');
+  const secureToken = await SecureStore.getItemAsync('token');
+  if (secureToken) {
+    return secureToken;
+  }
+
+  const legacyToken = await AsyncStorage.getItem('token');
+  if (legacyToken) {
+    await SecureStore.setItemAsync('token', legacyToken);
+    await AsyncStorage.removeItem('token');
+  }
+
+  return legacyToken;
 }
 
 export async function getUser() {
@@ -62,11 +74,13 @@ export async function getUser() {
 }
 
 export async function saveAuth(token: string, user: any) {
-  await AsyncStorage.setItem('token', token);
+  await SecureStore.setItemAsync('token', token);
+  await AsyncStorage.removeItem('token');
   await AsyncStorage.setItem('user', JSON.stringify(user));
 }
 
 export async function clearAuth() {
+  await SecureStore.deleteItemAsync('token');
   await AsyncStorage.removeItem('token');
   await AsyncStorage.removeItem('user');
 }

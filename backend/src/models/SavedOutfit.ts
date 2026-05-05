@@ -1,16 +1,20 @@
 import mongoose from 'mongoose';
 
+const SavedOutfitItemSchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true, maxlength: 100 },
+  reason: { type: String, required: true, trim: true, maxlength: 500 },
+}, { _id: false });
+
 const SavedOutfitSchema = new mongoose.Schema({
-  uid: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  occasion: String,
-  top: Object,
-  bottom: Object,
-  shoes: Object,
-  accessory: Object,
-  stylistNote: String,
-  wardrobeGap: String,
-  wardrobeGapSearchTerm: String,
-  createdAt: { type: Date, default: Date.now },
-});
+  uid: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  occasion: { type: String, required: true, trim: true, maxlength: 120 },
+  top: { type: SavedOutfitItemSchema, required: true },
+  bottom: { type: SavedOutfitItemSchema, required: true },
+  shoes: { type: SavedOutfitItemSchema, required: true },
+  accessory: { type: SavedOutfitItemSchema, required: true },
+  stylistNote: { type: String, trim: true, maxlength: 1000 },
+  wardrobeGap: { type: String, trim: true, maxlength: 500 },
+  wardrobeGapSearchTerm: { type: String, trim: true, maxlength: 100 },
+}, { timestamps: true });
 
 export const SavedOutfit = mongoose.model('SavedOutfit', SavedOutfitSchema);

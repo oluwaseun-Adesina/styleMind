@@ -1,43 +1,42 @@
-import { Response } from 'express';
-import { generateOutfitSuggestion, analyzeItemImage } from '../services/geminiService';
-import { getWeather } from '../services/weatherService';
+import type { Request, Response } from 'express';
+import { asyncHandler } from '../utils/errorHandler.js';
+import * as aiService from '../services/aiService.js';
 
-export const getSuggestion = async (req: any, res: Response) => {
-  const { prompt, wardrobe, lat, lon, lockedItemId } = req.body;
+/**
+ * POST /api/outfit-suggestion
+ * Generate outfit suggestion based on wardrobe and context
+ */
+export const getSuggestion = asyncHandler(async (req: Request, res: Response) => {
+  const result = await aiService.getOutfitSuggestion(req.user!.userId, req.body);
+  
+  res.json({
+    success: true,
+    data: result,
+  });
+});
 
-  if (!prompt) {
-    res.status(400).json({ error: 'Prompt is required.' });
-    return;
-  }
+/**
+ * POST /api/outfit-image
+ * Generate a visual image for an outfit suggestion
+ */
+export const getOutfitImage = asyncHandler(async (req: Request, res: Response) => {
+  const result = await aiService.getOutfitImage(req.user!.userId, req.body);
 
-  try {
-    let weatherInfo = null;
-    if (typeof lat === 'number' && typeof lon === 'number') {
-      weatherInfo = await getWeather(lat, lon);
-    }
+  res.json({
+    success: true,
+    data: result,
+  });
+});
 
-    const payload = await generateOutfitSuggestion(prompt, wardrobe, weatherInfo, lockedItemId);
-    res.json(payload);
-  } catch (error) {
-    console.error('Failed to generate outfit suggestion', error);
-    res.status(500).json({ error: 'Failed to generate outfit suggestion.' });
-  }
-};
-
-export const analyzeItem = async (req: any, res: Response) => {
-  const { imageBase64, mimeType, hint } = req.body;
-
-  if (!imageBase64 || !mimeType) {
-    res.status(400).json({ error: 'Image data and mime type are required.' });
-    return;
-  }
-
-  try {
-    const payload = await analyzeItemImage(imageBase64, mimeType, hint);
-    res.json(payload);
-  } catch (error) {
-    console.error('Failed to analyze item image', error);
-    const message = error instanceof Error ? error.message : 'Failed to analyze item image.';
-    res.status(500).json({ error: message });
-  }
-};
+/**
+ * POST /api/analyze-item
+ * Analyze clothing item from image
+ */
+export const analyzeItem = asyncHandler(async (req: Request, res: Response) => {
+  const result = await aiService.analyzeClothingItem(req.body);
+  
+  res.json({
+    success: true,
+    data: result,
+  });
+});

@@ -1,42 +1,46 @@
-import { Response } from 'express';
-import { SavedOutfit } from '../models/SavedOutfit';
+import type { Request, Response } from 'express';
+import { asyncHandler } from '../utils/errorHandler.js';
+import * as lookbookService from '../services/lookbookService.js';
 
-export const getLookbook = async (req: any, res: Response) => {
-  try {
-    const outfits = await SavedOutfit.find({ uid: req.user.userId }).sort({ createdAt: -1 });
-    const formatted = outfits.map(outfit => {
-      const obj = outfit.toObject();
-      return {
-        ...obj,
-        id: obj._id.toString(),
-        uid: obj.uid.toString()
-      };
-    });
-    res.json(formatted);
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch saved outfits' });
-  }
-};
+/**
+ * GET /api/saved_outfits
+ * Get all saved outfits for current user
+ */
+export const getLookbook = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const outfits = await lookbookService.getLookbook(userId);
+  
+  res.json({
+    success: true,
+    data: outfits,
+    count: outfits.length,
+  });
+});
 
-export const saveOutfit = async (req: any, res: Response) => {
-  try {
-    const newOutfit = new SavedOutfit({ ...req.body, uid: req.user.userId });
-    await newOutfit.save();
-    res.json({ 
-      ...newOutfit.toObject(),
-      id: newOutfit._id.toString(), 
-      uid: req.user.userId 
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to save outfit' });
-  }
-};
+/**
+ * POST /api/saved_outfits
+ * Save a new outfit
+ */
+export const saveOutfit = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const outfit = await lookbookService.saveOutfit(userId, req.body);
+  
+  res.status(201).json({
+    success: true,
+    data: outfit,
+  });
+});
 
-export const removeOutfit = async (req: any, res: Response) => {
-  try {
-    await SavedOutfit.findOneAndDelete({ _id: req.params.id, uid: req.user.userId });
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete outfit' });
-  }
-};
+/**
+ * DELETE /api/saved_outfits/:id
+ * Remove saved outfit
+ */
+export const removeOutfit = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  await lookbookService.removeOutfit(userId, req.params.id);
+  
+  res.json({
+    success: true,
+    message: 'Outfit removed successfully',
+  });
+});

@@ -1,13 +1,14 @@
-import { Type, createPartFromBase64, createPartFromText } from '@google/genai';
+import { PersonGeneration, SafetyFilterLevel, Type, createPartFromBase64, createPartFromText } from '@google/genai';
 import { getAI } from '../config/ai';
-import { ClothingItem, ItemAnalysis } from '../../../shared/types';
+import { ClothingItem, ItemAnalysis, OutfitSuggestion } from '../../../shared/types';
+import { MAX_IMAGE_BASE64_CHARS } from '../config/constants.js';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || GEMINI_MODEL;
+const GEMINI_OUTFIT_IMAGE_MODEL = process.env.GEMINI_OUTFIT_IMAGE_MODEL || 'imagen-4.0-generate-001';
 const VALID_ITEM_TYPES = ['top', 'bottom', 'shoes', 'accessory'] as const;
 const VALID_FORMALITIES = ['casual', 'smart casual', 'formal'] as const;
 const SUPPORTED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
-const MAX_IMAGE_BASE64_CHARS = 4_500_000;
 
 const normalizeBase64ImageData = (imageBase64: string) => {
   return imageBase64.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
@@ -242,4 +243,47 @@ export async function analyzeItemImage(imageBase64: string, mimeType: string, us
   }
 
   return payload;
+}
+
+export async function generateOutfitImage(suggestion: OutfitSuggestion) {
+  const prompt = `
+    Create a polished fashion flat-lay image of one complete outfit for: ${suggestion.occasion}.
+    Show only these wardrobe items:
+    - Top: ${suggestion.top.name}
+    - Bottom: ${suggestion.bottom.name}
+    - Shoes: ${suggestion.shoes.name}
+    - Accessory: ${suggestion.accessory.name}
+
+    Composition: editorial product photography, neutral studio background, clean spacing,
+    realistic fabric texture, coordinated colors, no text, no labels, no logos,
+    no mannequins, no humans, no faces, no bodies.
+
+    Styling note to guide the mood: ${suggestion.stylistNote}
+  `;
+
+  const response = await getAI().models.generateImages({
+    model: GEMINI_OUTFIT_IMAGE_MODEL,
+    prompt,
+    config: {
+      numberOfImages: 1,
+      aspectRatio: '3:4',
+      outputMimeType: 'image/png',
+      personGeneration: PersonGeneration.DONT_ALLOW,
+      safetyFilterLevel: SafetyFilterLevel.BLOCK_MEDIUM_AND_ABOVE,
+      includeRaiReason: true,
+    },
+  });
+
+  const generatedImage = response.generatedImages?.[0];
+  const imageBase64 = generatedImage?.image?.imageBytes;
+
+  if (!imageBase64) {
+    const reason = generatedImage?.raiFilteredReason || 'No image was generated';
+    throw new Error(reason);
+  }
+
+  return {
+    imageBase64,
+    mimeType: generatedImage.image?.mimeType || 'image/png',
+  };
 }

@@ -21,6 +21,11 @@ export interface OutfitSuggestion {
   wardrobeGapSearchTerm?: string;
 }
 
+export interface OutfitImageResult {
+  imageBase64: string;
+  mimeType: string;
+}
+
 export interface ItemAnalysis {
   name: string;
   color: string;
