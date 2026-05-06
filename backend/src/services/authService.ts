@@ -28,7 +28,8 @@ const generateToken = (userId: string, email: string): string => {
 };
 
 type GooglePayload = {
-  aud?: string;
+  aud?: string;       // ID tokens
+  audience?: string;  // access tokens (tokeninfo endpoint)
   email?: string;
   email_verified?: boolean | string;
   name?: string;
@@ -73,12 +74,15 @@ export const googleAuth = async (input: GoogleAuthInput): Promise<AuthResult> =>
         `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`
       );
 
-      if (tokenInfo.aud !== GOOGLE_CLIENT_ID) {
+      // Access tokens return "audience", ID tokens return "aud"
+      const aud = tokenInfo.audience ?? tokenInfo.aud;
+      if (aud !== GOOGLE_CLIENT_ID) {
         throw new AppError('Invalid Google token audience', 401);
       }
 
       payload = await fetchGoogleJson<GooglePayload>('https://www.googleapis.com/oauth2/v3/userinfo', token);
-    } catch {
+    } catch (err) {
+      if (err instanceof AppError) throw err;
       throw new AppError('Invalid Google token', 401);
     }
   }
