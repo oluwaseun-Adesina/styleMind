@@ -7,6 +7,7 @@ import authRoutes from './routes/authRoutes.js';
 import wardrobeRoutes from './routes/wardrobeRoutes.js';
 import lookbookRoutes from './routes/lookbookRoutes.js';
 import aiRoutes from './routes/aiRoutes.js';
+import { env } from './config/env.js';
 
 const app = express();
 
@@ -20,11 +21,7 @@ app.use(helmet({
 }));
 
 // CORS configuration
-const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map(origin => origin.trim()).filter(Boolean) || [
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'http://localhost:8081',
-];
+const allowedOrigins = env.ALLOWED_ORIGINS;
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -41,6 +38,16 @@ app.use(cors({
 // Body parsing
 app.use(express.json({ limit: '6mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
+  });
+  next();
+});
 
 // Rate limiting
 const standardLimiter = rateLimit({

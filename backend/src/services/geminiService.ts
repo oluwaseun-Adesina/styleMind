@@ -1,11 +1,11 @@
-import { PersonGeneration, SafetyFilterLevel, Type, createPartFromBase64, createPartFromText } from '@google/genai';
+import { Type, createPartFromBase64, createPartFromText } from '@google/genai';
 import { getAI } from '../config/ai';
 import { ClothingItem, ItemAnalysis, OutfitSuggestion } from '../../../shared/types';
 import { MAX_IMAGE_BASE64_CHARS } from '../config/constants.js';
+import { env } from '../config/env.js';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || GEMINI_MODEL;
-const GEMINI_OUTFIT_IMAGE_MODEL = process.env.GEMINI_OUTFIT_IMAGE_MODEL || 'imagen-4.0-generate-001';
 const VALID_ITEM_TYPES = ['top', 'bottom', 'shoes', 'accessory'] as const;
 const VALID_FORMALITIES = ['casual', 'smart casual', 'formal'] as const;
 const SUPPORTED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
@@ -103,11 +103,14 @@ export async function generateOutfitSuggestion(
     BEHAVIOR:
     1. Analyze the wardrobe and suggest the best outfit for the prompt.
     2. Suggest a COMPLETE outfit: top + bottom + shoes + accessory.
-    3. ONLY use items from the provided wardrobe.
+    3. ONLY use items from the provided wardrobe. NEVER invent items.
     4. ${weatherInfo ? 'CRITICAL: Ensure the outfit is appropriate for the current weather.' : 'Explain WHY you picked each item.'}
     5. Explain WHY you picked each item.
-    6. If the wardrobe is too limited, flag what is missing.
-    7. Keep tone friendly, confident, and stylish.
+    6. If there is no accessory in the wardrobe, pick the closest available item and note the gap in wardrobeGap.
+    7. If the wardrobe is too limited, flag what is missing in wardrobeGap.
+    8. Keep tone friendly, confident, and stylish.
+
+    CRITICAL: In your JSON response, copy each item's "name" field EXACTLY as it appears in the WARDROBE list above — same spelling, same capitalisation, same punctuation.
 
     OUTPUT FORMAT:
     You must return a JSON object matching this schema:
@@ -246,44 +249,103 @@ export async function analyzeItemImage(imageBase64: string, mimeType: string, us
 }
 
 export async function generateOutfitImage(suggestion: OutfitSuggestion) {
-  const prompt = `
-    Create a polished fashion flat-lay image of one complete outfit for: ${suggestion.occasion}.
-    Show only these wardrobe items:
-    - Top: ${suggestion.top.name}
-    - Bottom: ${suggestion.bottom.name}
-    - Shoes: ${suggestion.shoes.name}
-    - Accessory: ${suggestion.accessory.name}
+  const prompt = [
+    `fashion flat-lay outfit for ${suggestion.occasion}`,
+    `top: ${suggestion.top.name}`,
+    `bottom: ${suggestion.bottom.name}`,
+    `shoes: ${suggestion.shoes.name}`,
+    `accessory: ${suggestion.accessory.name}`,
+    'editorial product photography, neutral white studio background, clean spacing,',
+    'realistic fabric texture, coordinated colors, no text, no labels, no logos,',
+    'no mannequins, no humans, no faces, no bodies',
+  ].join(', ');
 
-    Composition: editorial product photography, neutral studio background, clean spacing,
-    realistic fabric texture, coordinated colors, no text, no labels, no logos,
-    no mannequins, no humans, no faces, no bodies.
+  console.log(`[ImageGen] Requesting Google Gemini Image generation for occasion: "${suggestion.occasion}"...`);
 
-    Styling note to guide the mood: ${suggestion.stylistNote}
-  `;
+  try {
+    const response = await getAI().models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: prompt,
+      config: {
+        responseModalities: ['IMAGE'],
+        imageConfig: {
+          aspectRatio: '3:4',
+        },
+      },
+    });
 
-  const response = await getAI().models.generateImages({
-    model: GEMINI_OUTFIT_IMAGE_MODEL,
-    prompt,
-    config: {
-      numberOfImages: 1,
-      aspectRatio: '3:4',
-      outputMimeType: 'image/png',
-      personGeneration: PersonGeneration.DONT_ALLOW,
-      safetyFilterLevel: SafetyFilterLevel.BLOCK_MEDIUM_AND_ABOVE,
-      includeRaiReason: true,
-    },
-  });
+    const inlineImage = response?.candidates?.[0]?.content?.parts?.find(
+      (part) => part.inlineData && part.inlineData.data
+    );
 
-  const generatedImage = response.generatedImages?.[0];
-  const imageBase64 = generatedImage?.image?.imageBytes;
+    if (!inlineImage || !inlineImage.inlineData || !inlineImage.inlineData.data) {
+      throw new Error('No image inlineData returned from Gemini API.');
+    }
 
-  if (!imageBase64) {
-    const reason = generatedImage?.raiFilteredReason || 'No image was generated';
-    throw new Error(reason);
+    console.log('[ImageGen] Google Gemini Image generation succeeded.');
+
+    return { 
+      imageBase64: inlineImage.inlineData.data as string, 
+      mimeType: inlineImage.inlineData.mimeType || 'image/jpeg' 
+    };
+  } catch (error: any) {
+    console.error(`[ImageGen] Google Gemini Image generation failed: ${error?.message || error}. Trying Hugging Face...`);
+
+    if (env.HF_TOKEN) {
+      try {
+        const hfModel = 'black-forest-labs/FLUX.1-schnell';
+        console.log(`[ImageGen] Requesting Hugging Face Image generation (${hfModel})...`);
+
+        const hfResponse = await fetch(
+          `https://router.huggingface.co/hf-inference/models/${hfModel}`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${env.HF_TOKEN}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+              inputs: prompt,
+            }),
+            signal: AbortSignal.timeout(60000),
+          }
+        );
+
+        if (!hfResponse.ok) {
+          const errText = await hfResponse.text().catch(() => '');
+          throw new Error(`Hugging Face API returned status ${hfResponse.status}: ${errText}`);
+        }
+
+        const buffer = await hfResponse.arrayBuffer();
+        const imageBase64 = Buffer.from(buffer).toString('base64');
+        const mimeType = hfResponse.headers.get('content-type') || 'image/jpeg';
+
+        console.log('[ImageGen] Hugging Face image generation succeeded.');
+
+        return { imageBase64, mimeType };
+      } catch (hfError: any) {
+        console.error(`[ImageGen] Hugging Face Image generation failed: ${hfError?.message || hfError}. Falling back to pollinations.ai...`);
+      }
+    } else {
+      console.log('[ImageGen] HF_TOKEN is not configured, skipping Hugging Face fallback...');
+    }
+
+    // Fallback to pollinations.ai
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=768&height=1024&model=flux&nologo=true`;
+    console.log(`[ImageGen] Requesting pollinations.ai fallback...`);
+    
+    const response = await fetch(url, { signal: AbortSignal.timeout(60000) });
+
+    if (!response.ok) {
+      throw new Error(`Image generation failed: ${response.status}`);
+    }
+
+    const buffer = await response.arrayBuffer();
+    const imageBase64 = Buffer.from(buffer).toString('base64');
+    const mimeType = response.headers.get('content-type') || 'image/jpeg';
+
+    console.log('[ImageGen] Fallback image generation succeeded.');
+
+    return { imageBase64, mimeType };
   }
-
-  return {
-    imageBase64,
-    mimeType: generatedImage.image?.mimeType || 'image/png',
-  };
 }

@@ -26,6 +26,11 @@ export const env = {
   MONGODB_URI: required('MONGODB_URI'),
   GOOGLE_CLIENT_ID: required('GOOGLE_CLIENT_ID'),
   OPENWEATHER_API_KEY: process.env.OPENWEATHER_API_KEY,
+  HF_TOKEN: process.env.HF_TOKEN,
   PORT: Number(process.env.PORT || 8787),
   NODE_ENV: process.env.NODE_ENV || 'development',
+  ALLOWED_ORIGINS: (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean),
 };

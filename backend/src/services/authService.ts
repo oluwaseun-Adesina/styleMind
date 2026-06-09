@@ -58,7 +58,8 @@ export const googleAuth = async (input: GoogleAuthInput): Promise<AuthResult> =>
 
   let payload: GooglePayload | undefined;
 
-  if (token.includes('.')) {
+  // JWT ID tokens have exactly 3 dot-separated parts (header.payload.signature)
+  if (token.split('.').length === 3) {
     try {
       const ticket = await client.verifyIdToken({
         idToken: token,
@@ -69,20 +70,10 @@ export const googleAuth = async (input: GoogleAuthInput): Promise<AuthResult> =>
       throw new AppError('Invalid Google token', 401);
     }
   } else {
+    // OAuth access token — call userinfo directly; Google returns 401 if token is invalid
     try {
-      const tokenInfo = await fetchGoogleJson<GooglePayload>(
-        `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`
-      );
-
-      // Access tokens return "audience", ID tokens return "aud"
-      const aud = tokenInfo.audience ?? tokenInfo.aud;
-      if (aud !== GOOGLE_CLIENT_ID) {
-        throw new AppError('Invalid Google token audience', 401);
-      }
-
       payload = await fetchGoogleJson<GooglePayload>('https://www.googleapis.com/oauth2/v3/userinfo', token);
-    } catch (err) {
-      if (err instanceof AppError) throw err;
+    } catch {
       throw new AppError('Invalid Google token', 401);
     }
   }

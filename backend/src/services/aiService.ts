@@ -37,27 +37,77 @@ export type OutfitImageResult = {
   mimeType: string;
 };
 
-const hasWardrobeItem = (
-  wardrobe: Array<{ name: string }>,
-  suggestedItem: { name?: string } | undefined
-): boolean => {
-  if (!suggestedItem?.name) {
-    return false;
+const findMatchingWardrobeItem = (
+  wardrobe: Array<{ id: string; name: string; type: string }>,
+  type: string,
+  suggestedName: string
+): string => {
+  const itemsOfType = wardrobe.filter(item => item.type === type);
+  if (!itemsOfType.length) {
+    return suggestedName;
   }
 
+  const cleanSuggested = suggestedName.trim().toLowerCase();
+
+  // 1. Exact match
+  let match = itemsOfType.find(
+    item => item.name.trim().toLowerCase() === cleanSuggested
+  );
+  if (match) return match.name;
+
+  // 2. Substring matches
+  match = itemsOfType.find(item => {
+    const cleanWardrobe = item.name.trim().toLowerCase();
+    return cleanWardrobe.includes(cleanSuggested) || cleanSuggested.includes(cleanWardrobe);
+  });
+  if (match) return match.name;
+
+  // 3. Token-based overlap
+  const suggestedTokens = cleanSuggested.split(/\s+/).filter(t => t.length > 2);
+  if (suggestedTokens.length > 0) {
+    match = itemsOfType.find(item => {
+      const cleanWardrobe = item.name.trim().toLowerCase();
+      return suggestedTokens.some(token => cleanWardrobe.includes(token));
+    });
+    if (match) return match.name;
+  }
+
+  // 4. Default fallback to first item of that type
+  return itemsOfType[0].name;
+};
+
+const hasWardrobeItem = (
+  wardrobe: Array<{ name: string; type: string }>,
+  suggestedItem: { name?: string } | undefined,
+  type: string
+): boolean => {
+  if (!suggestedItem?.name) return false;
+
+  // If user doesn't have any items of this type, we consider it a match (as it is a gap)
+  const hasType = wardrobe.some((item) => item.type === type);
+  if (!hasType) return true;
+
   const suggestedName = suggestedItem.name.trim().toLowerCase();
-  return wardrobe.some((item) => item.name.trim().toLowerCase() === suggestedName);
+  return wardrobe.some((item) => {
+    if (item.type !== type) return false;
+    const wardrobeName = item.name.trim().toLowerCase();
+    return (
+      wardrobeName === suggestedName ||
+      wardrobeName.includes(suggestedName) ||
+      suggestedName.includes(wardrobeName)
+    );
+  });
 };
 
 const suggestionUsesWardrobe = (
-  wardrobe: Array<{ name: string }>,
+  wardrobe: Array<{ name: string; type: string }>,
   suggestion: OutfitSuggestion
 ): boolean => {
   return (
-    hasWardrobeItem(wardrobe, suggestion.top) &&
-    hasWardrobeItem(wardrobe, suggestion.bottom) &&
-    hasWardrobeItem(wardrobe, suggestion.shoes) &&
-    hasWardrobeItem(wardrobe, suggestion.accessory)
+    hasWardrobeItem(wardrobe, suggestion.top, 'top') &&
+    hasWardrobeItem(wardrobe, suggestion.bottom, 'bottom') &&
+    hasWardrobeItem(wardrobe, suggestion.shoes, 'shoes') &&
+    hasWardrobeItem(wardrobe, suggestion.accessory, 'accessory')
   );
 };
 
@@ -99,11 +149,42 @@ export const getOutfitSuggestion = async (
       throw new AppError('AI response incomplete', 500);
     }
 
-    if (!suggestionUsesWardrobe(wardrobe, result as OutfitSuggestion)) {
+    // Auto-correct suggestion names to match wardrobe items where possible, and enforce locked items
+    const lockedItem = lockedItemId ? wardrobe.find(item => item.id === lockedItemId) : null;
+    
+    const mappedResult: OutfitSuggestion = {
+      ...result,
+      top: {
+        name: lockedItem?.type === 'top' 
+          ? lockedItem.name 
+          : findMatchingWardrobeItem(wardrobe as any, 'top', result.top?.name || ''),
+        reason: result.top?.reason || '',
+      },
+      bottom: {
+        name: lockedItem?.type === 'bottom' 
+          ? lockedItem.name 
+          : findMatchingWardrobeItem(wardrobe as any, 'bottom', result.bottom?.name || ''),
+        reason: result.bottom?.reason || '',
+      },
+      shoes: {
+        name: lockedItem?.type === 'shoes' 
+          ? lockedItem.name 
+          : findMatchingWardrobeItem(wardrobe as any, 'shoes', result.shoes?.name || ''),
+        reason: result.shoes?.reason || '',
+      },
+      accessory: {
+        name: lockedItem?.type === 'accessory' 
+          ? lockedItem.name 
+          : findMatchingWardrobeItem(wardrobe as any, 'accessory', result.accessory?.name || ''),
+        reason: result.accessory?.reason || '',
+      },
+    };
+
+    if (!suggestionUsesWardrobe(wardrobe as any, mappedResult)) {
       throw new AppError('AI response included items outside your wardrobe', 500);
     }
 
-    return result as OutfitSuggestion;
+    return mappedResult;
   } catch (error) {
     if (error instanceof AppError) {
       throw error;

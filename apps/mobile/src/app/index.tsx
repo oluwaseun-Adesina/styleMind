@@ -36,13 +36,7 @@ const buildAmazonAffiliateUrl = (searchTerm: string) => {
   return url.toString();
 };
 
-// Mock Ad Banner Component
-const AdBanner = () => (
-  <View className="w-full bg-slate-200 dark:bg-slate-800 py-3 items-center justify-center my-4 rounded-xl border border-slate-300 dark:border-slate-700">
-    <Text className="text-xs text-slate-500 font-bold uppercase tracking-widest">Advertisement</Text>
-    <Text className="text-sm font-medium text-slate-700 dark:text-slate-300">Get 15% off at ASOS. Tap here!</Text>
-  </View>
-);
+
 
 function GoogleSignInButton({
   authLoading,
@@ -67,7 +61,7 @@ function GoogleSignInButton({
 export default function AppScreen() {
   const router = useRouter();
   const nativeColorScheme = useNativeColorScheme();
-  const { authLoading: googleAuthLoading, isConfigured: hasGoogleSignIn } = useGoogleAuth();
+  const { authLoading: googleAuthLoading, isConfigured: hasGoogleSignIn, lastAuthResult } = useGoogleAuth();
   const [activeTab, setActiveTab] = useState<'stylist' | 'lookbook'>('stylist');
   const [user, setUser] = useState<any>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -134,6 +128,13 @@ export default function AppScreen() {
     };
     initAuth();
   }, []);
+
+  useEffect(() => {
+    if (lastAuthResult) {
+      setToken(lastAuthResult.token);
+      setUser(lastAuthResult.user);
+    }
+  }, [lastAuthResult]);
 
   const handleEmailAuth = async () => {
     if (!email || !password) return;
@@ -857,6 +858,9 @@ export default function AppScreen() {
                       <Text className="text-white dark:text-black font-medium text-lg">Choose a Photo</Text>
                     )}
                   </TouchableOpacity>
+                  {imageError ? (
+                    <Text className="text-red-500 text-xs mt-2 text-center">{imageError}</Text>
+                  ) : null}
                 </View>
               )}
 

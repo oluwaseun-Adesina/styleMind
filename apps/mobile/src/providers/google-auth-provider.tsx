@@ -1,6 +1,5 @@
 import { createContext, ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { useRouter } from 'expo-router';
 import * as Google from 'expo-auth-session/providers/google';
 import { makeRedirectUri, type AuthRequestPromptOptions, type AuthSessionResult } from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
@@ -37,15 +36,16 @@ type GoogleAuthContextValue = {
   isConfigured: boolean;
   isReady: boolean;
   promptAsync: (options?: AuthRequestPromptOptions) => Promise<AuthSessionResult>;
+  lastAuthResult: { token: string; user: any } | null;
 };
 
 const GoogleAuthContext = createContext<GoogleAuthContextValue | null>(null);
 
 export function GoogleAuthProvider({ children }: { children: ReactNode }) {
-  const router = useRouter();
   const handledAccessTokenRef = useRef<string | null>(null);
   const googleRedirectUri = getGoogleNativeRedirectUri();
   const [authLoading, setAuthLoading] = useState(false);
+  const [lastAuthResult, setLastAuthResult] = useState<{ token: string; user: any } | null>(null);
   const [request, response, promptAsync] = Google.useAuthRequest({
     androidClientId: GOOGLE_CLIENT_IDS.android,
     iosClientId: GOOGLE_CLIENT_IDS.ios,
@@ -69,7 +69,7 @@ export function GoogleAuthProvider({ children }: { children: ReactNode }) {
           token: accessToken,
         });
         await saveAuth(data.token, data.user);
-        router.replace('/');
+        setLastAuthResult({ token: data.token, user: data.user });
       } catch (error) {
         console.error('Google auth completion failed', error);
       } finally {
@@ -78,11 +78,12 @@ export function GoogleAuthProvider({ children }: { children: ReactNode }) {
     };
 
     void completeGoogleLogin();
-  }, [response, router]);
+  }, [response]);
 
   const value = useMemo<GoogleAuthContextValue>(
     () => ({
       authLoading,
+      lastAuthResult,
       isConfigured: Boolean(
         Platform.select({
           android: GOOGLE_CLIENT_IDS.android,
@@ -93,7 +94,7 @@ export function GoogleAuthProvider({ children }: { children: ReactNode }) {
       isReady: Boolean(request),
       promptAsync,
     }),
-    [authLoading, promptAsync, request]
+    [authLoading, lastAuthResult, promptAsync, request]
   );
 
   return <GoogleAuthContext.Provider value={value}>{children}</GoogleAuthContext.Provider>;

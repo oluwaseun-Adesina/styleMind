@@ -8,7 +8,9 @@ import * as wardrobeService from '../services/wardrobeService.js';
  */
 export const getWardrobe = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
+  console.log(`[Wardrobe] Fetching wardrobe items for user: ${userId}`);
   const items = await wardrobeService.getWardrobeItems(userId);
+  console.log(`[Wardrobe] Found ${items.length} items for user: ${userId}`);
   
   res.json({
     success: true,
@@ -23,7 +25,9 @@ export const getWardrobe = asyncHandler(async (req: Request, res: Response) => {
  */
 export const addItem = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
+  console.log(`[Wardrobe] Adding new item for user: ${userId}, item: ${req.body.name} (${req.body.type})`);
   const item = await wardrobeService.addWardrobeItem(userId, req.body);
+  console.log(`[Wardrobe] Successfully added item: ${item.id} for user: ${userId}`);
   
   res.status(201).json({
     success: true,
@@ -37,7 +41,10 @@ export const addItem = asyncHandler(async (req: Request, res: Response) => {
  */
 export const removeItem = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  await wardrobeService.removeWardrobeItem(userId, req.params.id);
+  const itemId = req.params.id;
+  console.log(`[Wardrobe] Request to remove item: ${itemId} by user: ${userId}`);
+  await wardrobeService.removeWardrobeItem(userId, itemId);
+  console.log(`[Wardrobe] Successfully removed item: ${itemId} for user: ${userId}`);
   
   res.json({
     success: true,

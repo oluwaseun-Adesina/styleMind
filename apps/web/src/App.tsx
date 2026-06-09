@@ -155,23 +155,31 @@ export default function App() {
 
   const handleGoogleLogin = useGoogleLogin({
     onSuccess: async (response) => {
+      setAuthError('');
       try {
         const res = await fetch(`${API_BASE_URL}/api/auth/google`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token: response.access_token }),
         });
-        
+
         if (res.ok) {
           const responseJson = await res.json();
           const data = responseJson?.data ?? responseJson;
           loginUser(data);
+        } else {
+          const errJson = await res.json().catch(() => null);
+          setAuthError(errJson?.error || 'Google sign-in failed. Please try again.');
         }
       } catch (error) {
         console.error("Login failed", error);
+        setAuthError('Google sign-in failed. Please try again.');
       }
     },
-    onError: (error) => console.error('Login Failed:', error)
+    onError: (error) => {
+      console.error('Login Failed:', error);
+      setAuthError('Google sign-in was cancelled or failed.');
+    }
   });
 
   const handleEmailAuth = async (e: FormEvent) => {
