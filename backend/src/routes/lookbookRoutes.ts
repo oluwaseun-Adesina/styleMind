@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getLookbook, saveOutfit, removeOutfit } from '../controllers/lookbookController.js';
+import { getLookbook, saveOutfit, removeOutfit, markWorn } from '../controllers/lookbookController.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { validateBody, validateParams } from '../middleware/validation.js';
 import { z } from 'zod';
@@ -32,6 +32,7 @@ const outfitIdSchema = z.object({
 
 router.get('/', getLookbook);
 router.post('/', validateBody(saveOutfitSchema), saveOutfit);
+router.post('/:id/worn', validateParams(outfitIdSchema), markWorn);
 router.delete('/:id', validateParams(outfitIdSchema), removeOutfit);
 
 export default router;

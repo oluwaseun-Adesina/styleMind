@@ -4,5 +4,9 @@ dist/
 coverage/
 .DS_Store
 *.log
+*.apk
+*.aab
 .env*
 !.env.example
+test-results/
+playwright-report/

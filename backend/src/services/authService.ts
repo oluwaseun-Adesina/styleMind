@@ -1,20 +1,37 @@
+import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { OAuth2Client } from 'google-auth-library';
 import { User } from '../models/User.js';
 import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
-import type { SignupInput, LoginInput, GoogleAuthInput } from '../utils/schemas.js';
+import { isAllowedAudience } from '../utils/audience.js';
+import { sendPasswordResetEmail } from './emailService.js';
+import type {
+  SignupInput,
+  LoginInput,
+  GoogleAuthInput,
+  ForgotPasswordInput,
+  ResetPasswordInput,
+  ChangePasswordInput,
+  UpdateProfileInput,
+} from '../utils/schemas.js';
 
 const JWT_SECRET = env.JWT_SECRET;
 const GOOGLE_CLIENT_ID = env.GOOGLE_CLIENT_ID;
 const SALT_ROUNDS = 10;
-const TOKEN_EXPIRY = '1h';
+const ACCESS_TOKEN_EXPIRY = '7d';
+const REFRESH_TOKEN_EXPIRY = '30d';
+
+// Every client ID whose tokens we trust. verifyIdToken accepts an array; the
+// access-token path checks membership explicitly.
+const ALLOWED_AUDIENCES = [GOOGLE_CLIENT_ID, ...env.GOOGLE_ALLOWED_AUDIENCES];
 
 const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 export type AuthResult = {
   token: string;
+  refreshToken: string;
   user: {
     id: string;
     email: string;
@@ -24,7 +41,53 @@ export type AuthResult = {
 };
 
 const generateToken = (userId: string, email: string): string => {
-  return jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: TOKEN_EXPIRY });
+  return jwt.sign({ userId, email }, JWT_SECRET, { expiresIn: ACCESS_TOKEN_EXPIRY });
+};
+
+const generateRefreshToken = (userId: string, email: string): string => {
+  return jwt.sign({ userId, email, type: 'refresh' }, JWT_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRY });
+};
+
+const buildAuthResult = (user: {
+  _id: { toString(): string };
+  email: string;
+  name?: string | null;
+  picture?: string | null;
+}): AuthResult => {
+  const userId = user._id.toString();
+  return {
+    token: generateToken(userId, user.email),
+    refreshToken: generateRefreshToken(userId, user.email),
+    user: {
+      id: userId,
+      email: user.email,
+      name: user.name || user.email.split('@')[0],
+      picture: user.picture || undefined,
+    },
+  };
+};
+
+/**
+ * Exchange a valid refresh token for a fresh access + refresh token pair.
+ */
+export const refreshSession = async (refreshToken: string): Promise<AuthResult> => {
+  let decoded: { userId: string; email: string; type?: string };
+  try {
+    decoded = jwt.verify(refreshToken, JWT_SECRET) as typeof decoded;
+  } catch {
+    throw new AppError('Invalid or expired refresh token', 401);
+  }
+
+  if (decoded.type !== 'refresh') {
+    throw new AppError('Invalid refresh token', 401);
+  }
+
+  const user = await User.findById(decoded.userId);
+  if (!user) {
+    throw new AppError('User not found', 401);
+  }
+
+  return buildAuthResult(user);
 };
 
 type GooglePayload = {
@@ -35,6 +98,16 @@ type GooglePayload = {
   name?: string;
   given_name?: string;
   picture?: string;
+};
+
+// tokeninfo response for an OAuth access token. `aud`/`azp` bind the token to a
+// specific OAuth client; we must verify this before trusting the token.
+type GoogleTokenInfo = {
+  aud?: string;
+  azp?: string;
+  email?: string;
+  email_verified?: boolean | string;
+  expires_in?: string;
 };
 
 const fetchGoogleJson = async <T>(url: string, token?: string): Promise<T> => {
@@ -70,12 +143,40 @@ export const googleAuth = async (input: GoogleAuthInput): Promise<AuthResult> =>
       throw new AppError('Invalid Google token', 401);
     }
   } else {
-    // OAuth access token — call userinfo directly; Google returns 401 if token is invalid
+    // OAuth access token. The userinfo endpoint returns a profile for ANY valid
+    // access token regardless of which OAuth client minted it, so we must first
+    // verify the token's audience via tokeninfo before trusting it. Skipping
+    // this allows a token issued to a different app to be replayed here for
+    // account takeover (OAuth confused-deputy / token substitution).
+    let tokenInfo: GoogleTokenInfo;
     try {
-      payload = await fetchGoogleJson<GooglePayload>('https://www.googleapis.com/oauth2/v3/userinfo', token);
+      tokenInfo = await fetchGoogleJson<GoogleTokenInfo>(
+        `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`
+      );
     } catch {
       throw new AppError('Invalid Google token', 401);
     }
+
+    const audience = tokenInfo.aud || tokenInfo.azp;
+    if (!isAllowedAudience(audience, ALLOWED_AUDIENCES)) {
+      throw new AppError('Google token was not issued for this application', 401);
+    }
+
+    // Audience verified — safe to enrich the profile (name/picture) from userinfo.
+    let profile: GooglePayload = {};
+    try {
+      profile = await fetchGoogleJson<GooglePayload>('https://www.googleapis.com/oauth2/v3/userinfo', token);
+    } catch {
+      // Non-fatal: fall back to tokeninfo fields if userinfo is unavailable.
+    }
+
+    payload = {
+      email: profile.email || tokenInfo.email,
+      email_verified: profile.email_verified ?? tokenInfo.email_verified,
+      name: profile.name,
+      given_name: profile.given_name,
+      picture: profile.picture,
+    };
   }
 
   if (!payload?.email) {
@@ -88,7 +189,7 @@ export const googleAuth = async (input: GoogleAuthInput): Promise<AuthResult> =>
 
   // Find or create user
   let user = await User.findOne({ email: payload.email });
-  
+
   if (!user) {
     user = new User({
       email: payload.email,
@@ -98,17 +199,7 @@ export const googleAuth = async (input: GoogleAuthInput): Promise<AuthResult> =>
     await user.save();
   }
 
-  const sessionToken = generateToken(user._id.toString(), user.email);
-  
-  return {
-    token: sessionToken,
-    user: {
-      id: user._id.toString(),
-      email: user.email,
-      name: user.name || payload.email.split('@')[0],
-      picture: user.picture || undefined,
-    },
-  };
+  return buildAuthResult(user);
 };
 
 /**
@@ -134,16 +225,7 @@ export const signup = async (input: SignupInput): Promise<AuthResult> => {
     throw err;
   }
 
-  const sessionToken = generateToken(user._id.toString(), user.email);
-
-  return {
-    token: sessionToken,
-    user: {
-      id: user._id.toString(),
-      email: user.email,
-      name: user.name || email.split('@')[0],
-    },
-  };
+  return buildAuthResult(user);
 };
 
 /**
@@ -163,17 +245,7 @@ export const login = async (input: LoginInput): Promise<AuthResult> => {
     throw new AppError('Invalid credentials', 401);
   }
 
-  const sessionToken = generateToken(user._id.toString(), user.email);
-
-  return {
-    token: sessionToken,
-    user: {
-      id: user._id.toString(),
-      email: user.email,
-      name: user.name || '',
-      picture: user.picture || undefined,
-    },
-  };
+  return buildAuthResult(user);
 };
 
 /**
@@ -185,4 +257,125 @@ export const getUserById = async (userId: string) => {
     throw new AppError('User not found', 404);
   }
   return user;
+};
+
+const RESET_CODE_TTL_MS = 15 * 60 * 1000;
+const RESET_CODE_MAX_ATTEMPTS = 5;
+
+/**
+ * Start a password reset: email the user a short-lived 6-digit code.
+ * Always resolves successfully so the endpoint can't be used to probe
+ * which emails have accounts.
+ */
+export const forgotPassword = async (input: ForgotPasswordInput): Promise<void> => {
+  const user = await User.findOne({ email: input.email });
+  if (!user) return;
+
+  const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
+  user.set({
+    resetCodeHash: await bcrypt.hash(code, SALT_ROUNDS),
+    resetCodeExpiresAt: new Date(Date.now() + RESET_CODE_TTL_MS),
+    resetCodeAttempts: 0,
+  });
+  await user.save();
+
+  try {
+    await sendPasswordResetEmail(user.email, code);
+  } catch (err) {
+    // Don't leak account existence through error responses; just log.
+    console.error('[Auth] Failed to send password reset email', err);
+  }
+};
+
+/**
+ * Complete a password reset: verify the emailed code and set the new password.
+ * Logs the user in on success.
+ */
+export const resetPassword = async (input: ResetPasswordInput): Promise<AuthResult> => {
+  const { email, code, newPassword } = input;
+
+  const user = await User.findOne({ email }).select('+resetCodeHash +resetCodeExpiresAt +resetCodeAttempts');
+  const invalid = new AppError('Invalid or expired reset code', 401);
+
+  if (!user || !user.resetCodeHash || !user.resetCodeExpiresAt || user.resetCodeExpiresAt.getTime() < Date.now()) {
+    throw invalid;
+  }
+
+  if ((user.resetCodeAttempts ?? 0) >= RESET_CODE_MAX_ATTEMPTS) {
+    throw new AppError('Too many incorrect attempts. Please request a new code.', 429);
+  }
+
+  const isMatch = await bcrypt.compare(code, user.resetCodeHash);
+  if (!isMatch) {
+    user.resetCodeAttempts = (user.resetCodeAttempts ?? 0) + 1;
+    await user.save();
+    throw invalid;
+  }
+
+  user.set({
+    password: await bcrypt.hash(newPassword, SALT_ROUNDS),
+    resetCodeHash: undefined,
+    resetCodeExpiresAt: undefined,
+    resetCodeAttempts: 0,
+  });
+  await user.save();
+
+  return buildAuthResult(user);
+};
+
+/**
+ * Change (or, for Google-only accounts, set) the password of a logged-in user.
+ */
+export const changePassword = async (userId: string, input: ChangePasswordInput): Promise<void> => {
+  const user = await User.findById(userId).select('+password');
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+
+  if (user.password) {
+    if (!input.currentPassword) {
+      throw new AppError('Current password is required', 400);
+    }
+    const isMatch = await bcrypt.compare(input.currentPassword, user.password);
+    if (!isMatch) {
+      throw new AppError('Current password is incorrect', 401);
+    }
+  }
+
+  user.password = await bcrypt.hash(input.newPassword, SALT_ROUNDS);
+  await user.save();
+};
+
+/**
+ * Current user's profile. `hasPassword` tells the client whether to ask for a
+ * current password (email accounts) or offer to set one (Google-only accounts).
+ */
+export const getMe = async (userId: string) => {
+  const user = await User.findById(userId).select('+password');
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+  return {
+    id: user._id.toString(),
+    email: user.email,
+    name: user.name || user.email.split('@')[0],
+    picture: user.picture || undefined,
+    hasPassword: Boolean(user.password),
+  };
+};
+
+/**
+ * Update profile fields the user is allowed to change.
+ */
+export const updateProfile = async (userId: string, input: UpdateProfileInput) => {
+  const user = await User.findByIdAndUpdate(userId, { name: input.name }, { new: true, runValidators: true });
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+  return {
+    id: user._id.toString(),
+    email: user.email,
+    name: user.name || user.email.split('@')[0],
+    picture: user.picture || undefined,
+  };
 };

@@ -15,6 +15,8 @@ const SavedOutfitSchema = new mongoose.Schema({
   stylistNote: { type: String, trim: true, maxlength: 1000 },
   wardrobeGap: { type: String, trim: true, maxlength: 500 },
   wardrobeGapSearchTerm: { type: String, trim: true, maxlength: 100 },
+  wornCount: { type: Number, default: 0, min: 0 },
+  lastWornAt: { type: Date, default: null },
 }, { timestamps: true });
 
 export const SavedOutfit = mongoose.model('SavedOutfit', SavedOutfitSchema);

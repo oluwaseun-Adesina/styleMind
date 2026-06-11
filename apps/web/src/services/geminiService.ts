@@ -1,53 +1,71 @@
-import { ClothingItem, OutfitImageResult, OutfitSuggestion } from "../types";
+import { EventRecord, OutfitImageResult, OutfitSuggestion, SavedOutfitRecord } from "../types";
+import { apiJson, jsonHeaders } from "./apiClient";
+
+export { refreshSession } from "./apiClient";
 
 export async function getOutfitSuggestion(
-  _wardrobe: ClothingItem[],
   prompt: string,
-  token: string,
-  lat?: number,
-  lon?: number,
-  lockedItemId?: string | null
+  opts: { lat?: number; lon?: number; lockedItemId?: string | null; count?: number } = {}
 ): Promise<OutfitSuggestion> {
-  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8787';
-
-  const response = await fetch(`${apiBaseUrl}/api/outfit-suggestion`, {
+  return apiJson<OutfitSuggestion>('/api/outfit-suggestion', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
-    body: JSON.stringify({ prompt, lat, lon, lockedItemId }),
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      prompt,
+      lat: opts.lat,
+      lon: opts.lon,
+      lockedItemId: opts.lockedItemId,
+      count: opts.count,
+    }),
   });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => null);
-    throw new Error(error?.error || 'Failed to generate outfit suggestion.');
-  }
-
-  const result = await response.json();
-  return (result && typeof result === 'object' && 'data' in result ? result.data : result) as OutfitSuggestion;
 }
 
-export async function getOutfitImage(
-  suggestion: OutfitSuggestion,
-  token: string
-): Promise<OutfitImageResult> {
-  const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8787';
+export async function getDailyOutfitSuggestion(
+  opts: { lat?: number; lon?: number; plan?: string; variety?: boolean; count?: number } = {}
+): Promise<OutfitSuggestion> {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
 
-  const response = await fetch(`${apiBaseUrl}/api/outfit-image`, {
+  return apiJson<OutfitSuggestion>('/api/outfit-suggestion', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
+    headers: jsonHeaders,
+    body: JSON.stringify({
+      auto: true,
+      variety: Boolean(opts.variety),
+      prompt: opts.plan?.trim() || undefined,
+      count: opts.count,
+      localHour: now.getHours(),
+      localDate: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+      lat: opts.lat,
+      lon: opts.lon,
+    }),
+  });
+}
+
+export async function getOutfitImage(suggestion: OutfitSuggestion): Promise<OutfitImageResult> {
+  return apiJson<OutfitImageResult>('/api/outfit-image', {
+    method: 'POST',
+    headers: jsonHeaders,
     body: JSON.stringify({ suggestion }),
   });
+}
 
-  if (!response.ok) {
-    const error = await response.json().catch(() => null);
-    throw new Error(error?.error || 'Failed to generate outfit image.');
-  }
+export async function markOutfitWorn(outfitId: string): Promise<SavedOutfitRecord> {
+  return apiJson<SavedOutfitRecord>(`/api/saved_outfits/${outfitId}/worn`, { method: 'POST' });
+}
 
-  const result = await response.json();
-  return (result && typeof result === 'object' && 'data' in result ? result.data : result) as OutfitImageResult;
+export async function getEvents(from?: string): Promise<EventRecord[]> {
+  return apiJson<EventRecord[]>(`/api/events${from ? `?from=${from}` : ''}`);
+}
+
+export async function addEvent(input: { title: string; date: string; time?: string }): Promise<EventRecord> {
+  return apiJson<EventRecord>('/api/events', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function removeEvent(id: string): Promise<void> {
+  await apiJson(`/api/events/${id}`, { method: 'DELETE' });
 }

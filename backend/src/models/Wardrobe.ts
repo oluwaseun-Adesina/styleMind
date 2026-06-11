@@ -7,6 +7,9 @@ const WardrobeSchema = new mongoose.Schema(
     color: { type: String, required: true, trim: true, maxlength: 50 },
     type: { type: String, required: true, enum: ['top', 'bottom', 'shoes', 'accessory'] },
     formality: { type: String, required: true, enum: ['casual', 'smart casual', 'formal'] },
+    // Optional material/texture/detail description, used to make AI outfit
+    // images match the real garment. Auto-filled by the photo scan.
+    description: { type: String, trim: true, maxlength: 300 },
   },
   { timestamps: true }
 );

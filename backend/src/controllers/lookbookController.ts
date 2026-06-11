@@ -36,6 +36,21 @@ export const saveOutfit = asyncHandler(async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/saved_outfits/:id/worn
+ * Mark a saved outfit as worn today
+ */
+export const markWorn = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const outfitId = req.params.id;
+  const outfit = await lookbookService.markOutfitWorn(userId, outfitId);
+
+  res.json({
+    success: true,
+    data: outfit,
+  });
+});
+
+/**
  * DELETE /api/saved_outfits/:id
  * Remove saved outfit
  */

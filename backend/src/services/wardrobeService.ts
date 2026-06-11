@@ -8,23 +8,35 @@ export type WardrobeItem = {
   color: string;
   type: string;
   formality: string;
+  description?: string;
   uid: string;
 };
+
+const toWardrobeItem = (item: {
+  _id: { toString(): string };
+  name: string;
+  color: string;
+  type: string;
+  formality: string;
+  description?: string | null;
+  uid: { toString(): string };
+}): WardrobeItem => ({
+  id: item._id.toString(),
+  name: item.name,
+  color: item.color,
+  type: item.type,
+  formality: item.formality,
+  description: item.description || undefined,
+  uid: item.uid.toString(),
+});
 
 /**
  * Get all wardrobe items for a user
  */
 export const getWardrobeItems = async (userId: string): Promise<WardrobeItem[]> => {
   const items = await Wardrobe.find({ uid: userId });
-  
-  return items.map(item => ({
-    id: item._id.toString(),
-    name: item.name,
-    color: item.color,
-    type: item.type,
-    formality: item.formality,
-    uid: item.uid.toString(),
-  }));
+
+  return items.map(toWardrobeItem);
 };
 
 /**
@@ -41,14 +53,41 @@ export const addWardrobeItem = async (
 
   await newItem.save();
 
-  return {
-    id: newItem._id.toString(),
-    name: newItem.name,
-    color: newItem.color,
-    type: newItem.type,
-    formality: newItem.formality,
-    uid: newItem.uid.toString(),
+  return toWardrobeItem(newItem);
+};
+
+/**
+ * Update a wardrobe item (owner-scoped)
+ */
+export const updateWardrobeItem = async (
+  userId: string,
+  itemId: string,
+  input: WardrobeItemInput
+): Promise<WardrobeItem> => {
+  const fields = {
+    name: input.name,
+    color: input.color,
+    type: input.type,
+    formality: input.formality,
   };
+
+  // An omitted/empty description clears the field rather than keeping stale
+  // text — undefined values are stripped by Mongoose, so $unset explicitly.
+  const update = input.description
+    ? { $set: { ...fields, description: input.description } }
+    : { $set: fields, $unset: { description: 1 } };
+
+  const item = await Wardrobe.findOneAndUpdate(
+    { _id: itemId, uid: userId },
+    update,
+    { new: true, runValidators: true }
+  );
+
+  if (!item) {
+    throw new AppError('Item not found or unauthorized', 404);
+  }
+
+  return toWardrobeItem(item);
 };
 
 /**
@@ -84,14 +123,7 @@ export const getWardrobeItemById = async (
     throw new AppError('Item not found', 404);
   }
 
-  return {
-    id: item._id.toString(),
-    name: item.name,
-    color: item.color,
-    type: item.type,
-    formality: item.formality,
-    uid: item.uid.toString(),
-  };
+  return toWardrobeItem(item);
 };
 
 /**

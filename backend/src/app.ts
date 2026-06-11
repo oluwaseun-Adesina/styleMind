@@ -6,6 +6,7 @@ import { errorHandler, notFoundHandler } from './utils/errorHandler.js';
 import authRoutes from './routes/authRoutes.js';
 import wardrobeRoutes from './routes/wardrobeRoutes.js';
 import lookbookRoutes from './routes/lookbookRoutes.js';
+import eventRoutes from './routes/eventRoutes.js';
 import aiRoutes from './routes/aiRoutes.js';
 import { env } from './config/env.js';
 
@@ -52,7 +53,7 @@ app.use((req, res, next) => {
 // Rate limiting
 const standardLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: env.RATE_LIMIT_MAX, // Limit each IP to N requests per windowMs
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -63,7 +64,7 @@ const standardLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: env.AUTH_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -75,7 +76,7 @@ const authLimiter = rateLimit({
 // Stricter rate limiting for AI endpoints (cost $)
 const aiLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 10, // Limit each IP to 10 AI requests per minute
+  max: env.AI_RATE_LIMIT_MAX, // Limit each IP to N AI requests per minute
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -92,6 +93,9 @@ app.use('/api/wardrobes', standardLimiter, wardrobeRoutes);
 
 // Lookbook routes (standard limit)
 app.use('/api/saved_outfits', standardLimiter, lookbookRoutes);
+
+// Event routes (standard limit)
+app.use('/api/events', standardLimiter, eventRoutes);
 
 // AI routes (strict limit)
 app.use('/api', aiLimiter, aiRoutes);

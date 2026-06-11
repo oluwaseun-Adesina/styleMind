@@ -10,28 +10,28 @@ const VALID_ITEM_TYPES = ['top', 'bottom', 'shoes', 'accessory'] as const;
 const VALID_FORMALITIES = ['casual', 'smart casual', 'formal'] as const;
 const SUPPORTED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
 
-const normalizeBase64ImageData = (imageBase64: string) => {
+export const normalizeBase64ImageData = (imageBase64: string) => {
   return imageBase64.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
 };
 
-const normalizeItemType = (value: unknown): ItemAnalysis['type'] => {
+export const normalizeItemType = (value: unknown): ItemAnalysis['type'] => {
   const normalized = String(value || '').trim().toLowerCase();
   return (VALID_ITEM_TYPES as readonly string[]).includes(normalized) ? (normalized as ItemAnalysis['type']) : 'accessory';
 };
 
-const normalizeFormality = (value: unknown): ItemAnalysis['formality'] => {
+export const normalizeFormality = (value: unknown): ItemAnalysis['formality'] => {
   const normalized = String(value || '').trim().toLowerCase();
   return (VALID_FORMALITIES as readonly string[]).includes(normalized) ? (normalized as ItemAnalysis['formality']) : 'casual';
 };
 
-const normalizeAnalyzedItems = (payload: unknown): { items: ItemAnalysis[] } => {
+export const normalizeAnalyzedItems = (payload: unknown): { items: ItemAnalysis[] } => {
   const rawItems = Array.isArray((payload as { items?: unknown[] } | null)?.items)
     ? (payload as { items: unknown[] }).items
     : [];
 
   return {
     items: rawItems
-      .map((item) => {
+      .map((item): ItemAnalysis | null => {
         if (!item || typeof item !== 'object') {
           return null;
         }
@@ -49,6 +49,7 @@ const normalizeAnalyzedItems = (payload: unknown): { items: ItemAnalysis[] } => 
           color,
           type: normalizeItemType(candidate.type),
           formality: normalizeFormality(candidate.formality),
+          description: String(candidate.description || '').trim().slice(0, 300) || undefined,
           notes: String(candidate.notes || '').trim(),
         };
       })
@@ -60,7 +61,9 @@ export async function generateOutfitSuggestion(
   prompt: string,
   wardrobe: ClothingItem[],
   weatherInfo: any,
-  lockedItemId?: string | null
+  lockedItemId?: string | null,
+  styleContext?: { timeOfDay: string; season: string } | null,
+  options?: { variety?: boolean; avoidItems?: string[] }
 ) {
   const safeWardrobe = wardrobe.filter((item): item is ClothingItem => {
     return Boolean(
@@ -78,12 +81,27 @@ export async function generateOutfitSuggestion(
   }
 
   const wardrobeStr = safeWardrobe
-    .map((item) => `- ${item.name} (${item.color}, ${item.type}, ${item.formality})`)
+    .map((item) =>
+      `- ${item.name} (${item.color}, ${item.type}, ${item.formality})${item.description ? ` — ${item.description}` : ''}`
+    )
     .join('\n');
 
-  const weatherContext = weatherInfo 
+  const weatherContext = weatherInfo
     ? `CURRENT WEATHER in ${weatherInfo.city}: ${weatherInfo.temp}°C, ${weatherInfo.description}.`
     : '';
+
+  const timeSeasonContext = styleContext
+    ? `CURRENT CONTEXT: It is ${styleContext.timeOfDay} time and the season is ${styleContext.season}. The outfit must suit this time of day and season (fabrics, layers, colors).`
+    : '';
+
+  const avoidItems = options?.avoidItems?.filter(Boolean) ?? [];
+  const varietyContext = options?.variety
+    ? `VARIETY: The user wants a noticeably DIFFERENT look this time. Choose a fresh combination${
+        avoidItems.length ? `, and avoid leaning on recently worn items: ${avoidItems.join(', ')}.` : '.'
+      }`
+    : avoidItems.length
+      ? `Prefer items the user has NOT worn recently. Recently worn: ${avoidItems.join(', ')}.`
+      : '';
 
   const lockedItem = safeWardrobe.find(i => i.id === lockedItemId);
   const lockedContext = lockedItem 
@@ -95,6 +113,8 @@ export async function generateOutfitSuggestion(
     Your job is to suggest complete outfit combinations exclusively from the user's own wardrobe.
 
     ${weatherContext}
+    ${timeSeasonContext}
+    ${varietyContext}
     ${lockedContext}
 
     WARDROBE:
@@ -206,6 +226,11 @@ export async function analyzeItemImage(imageBase64: string, mimeType: string, us
     - color: the dominant color or color combination
     - type: one of top, bottom, shoes, accessory
     - formality: one of casual, smart casual, formal
+    - description: a concise VISUAL description of the garment as seen in the photo,
+      focused on what an image generator would need to recreate it faithfully:
+      material/fabric (e.g. ribbed cotton knit, washed denim, patent leather),
+      texture, pattern or print, fit/silhouette, and distinctive details
+      (buttons, stitching, hardware, sole type). One sentence, max 200 characters.
     - notes: a short note about any uncertainty or useful detail
 
     ${userHint ? `User hint: ${userHint}` : ''}
@@ -228,9 +253,10 @@ export async function analyzeItemImage(imageBase64: string, mimeType: string, us
                 color: { type: Type.STRING },
                 type: { type: Type.STRING },
                 formality: { type: Type.STRING },
+                description: { type: Type.STRING },
                 notes: { type: Type.STRING },
               },
-              required: ['name', 'color', 'type', 'formality', 'notes'],
+              required: ['name', 'color', 'type', 'formality', 'description', 'notes'],
             }
           }
         },
@@ -248,13 +274,26 @@ export async function analyzeItemImage(imageBase64: string, mimeType: string, us
   return payload;
 }
 
-export async function generateOutfitImage(suggestion: OutfitSuggestion) {
+// Per-slot garment details pulled from the user's real wardrobe items, so the
+// generated image matches what they actually own (material, texture, fit).
+export type OutfitItemDetails = Partial<
+  Record<'top' | 'bottom' | 'shoes' | 'accessory', { color?: string; description?: string }>
+>;
+
+export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDetails?: OutfitItemDetails) {
+  const part = (slot: keyof OutfitItemDetails, name: string) => {
+    const detail = itemDetails?.[slot];
+    const extras = [detail?.color, detail?.description].filter(Boolean).join(', ');
+    return `${slot}: ${name}${extras ? ` (${extras})` : ''}`;
+  };
+
   const prompt = [
     `fashion flat-lay outfit for ${suggestion.occasion}`,
-    `top: ${suggestion.top.name}`,
-    `bottom: ${suggestion.bottom.name}`,
-    `shoes: ${suggestion.shoes.name}`,
-    `accessory: ${suggestion.accessory.name}`,
+    part('top', suggestion.top.name),
+    part('bottom', suggestion.bottom.name),
+    part('shoes', suggestion.shoes.name),
+    part('accessory', suggestion.accessory.name),
+    'depict each garment exactly as described, faithful to the stated material, texture and fit,',
     'editorial product photography, neutral white studio background, clean spacing,',
     'realistic fabric texture, coordinated colors, no text, no labels, no logos,',
     'no mannequins, no humans, no faces, no bodies',

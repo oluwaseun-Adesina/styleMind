@@ -36,6 +36,23 @@ export const addItem = asyncHandler(async (req: Request, res: Response) => {
 });
 
 /**
+ * PUT /api/wardrobes/:id
+ * Update wardrobe item
+ */
+export const updateItem = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const itemId = req.params.id;
+  console.log(`[Wardrobe] Updating item: ${itemId} for user: ${userId}`);
+  const item = await wardrobeService.updateWardrobeItem(userId, itemId, req.body);
+  console.log(`[Wardrobe] Successfully updated item: ${itemId} for user: ${userId}`);
+
+  res.json({
+    success: true,
+    data: item,
+  });
+});
+
+/**
  * DELETE /api/wardrobes/:id
  * Remove wardrobe item
  */

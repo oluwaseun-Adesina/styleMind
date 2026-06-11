@@ -18,7 +18,8 @@
     "preview:web": "vite preview --config apps/web/vite.config.ts",
     "clean": "rm -rf apps/web/dist",
     "lint": "npm run lint:web",
-    "lint:web": "tsc -p apps/web/tsconfig.json --noEmit"
+    "lint:web": "tsc -p apps/web/tsconfig.json --noEmit",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -35,6 +36,7 @@
     "vite": "^6.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.1",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.2.14",

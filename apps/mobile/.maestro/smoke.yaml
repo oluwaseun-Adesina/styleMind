@@ -1,0 +1,18 @@
+# Maestro smoke flow for the FitPick mobile app.
+#
+# Prerequisites:
+#   - Install Maestro CLI:  curl -Ls https://get.maestro.mobile.dev | bash
+#   - A running emulator/simulator with the app installed (expo run:android / run:ios)
+# Run with:  maestro test apps/mobile/.maestro/smoke.yaml
+appId: com.fitpick.app
+---
+- launchApp:
+    clearState: true
+# The unauthenticated login screen should render the brand + auth fields.
+- assertVisible: "FitPick"
+- assertVisible: "Email Address"
+- assertVisible: "Password"
+# Toggle to the create-account view.
+- tapOn:
+    text: ".*Need an account.*"
+- assertVisible: "Create Account"
