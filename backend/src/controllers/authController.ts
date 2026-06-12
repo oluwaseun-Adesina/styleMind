@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { asyncHandler } from '../utils/errorHandler.js';
+import { logger } from '../utils/logger.js';
 import * as authService from '../services/authService.js';
 
 /**
@@ -7,10 +8,14 @@ import * as authService from '../services/authService.js';
  * Authenticate with Google OAuth
  */
 export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
-  console.log(`[Auth] Attempting Google OAuth login...`);
+  logger.debug('[Auth] Attempting Google OAuth login...');
   const result = await authService.googleAuth(req.body);
-  console.log(`[Auth] Google OAuth login succeeded for user: ${result.user.email}`);
-  
+  logger.audit('auth.google_login', {
+    userId: result.user.id,
+    ip: req.ip,
+    metadata: { email: result.user.email },
+  });
+
   res.json({
     success: true,
     data: result,
@@ -22,10 +27,14 @@ export const googleAuth = asyncHandler(async (req: Request, res: Response) => {
  * Register new user
  */
 export const signup = asyncHandler(async (req: Request, res: Response) => {
-  console.log(`[Auth] Creating new user account: ${req.body.email}`);
+  logger.debug(`[Auth] Creating new user account: ${req.body.email}`);
   const result = await authService.signup(req.body);
-  console.log(`[Auth] User registration succeeded: ${result.user.id}`);
-  
+  logger.audit('auth.signup', {
+    userId: result.user.id,
+    ip: req.ip,
+    metadata: { email: result.user.email },
+  });
+
   res.status(201).json({
     success: true,
     data: result,
@@ -51,7 +60,10 @@ export const refresh = asyncHandler(async (req: Request, res: Response) => {
  * revealing which emails have accounts.
  */
 export const forgotPassword = asyncHandler(async (req: Request, res: Response) => {
-  console.log(`[Auth] Password reset requested for email: ${req.body.email}`);
+  logger.audit('auth.password_reset_requested', {
+    ip: req.ip,
+    metadata: { email: req.body.email },
+  });
   await authService.forgotPassword(req.body);
 
   res.json({
@@ -66,7 +78,7 @@ export const forgotPassword = asyncHandler(async (req: Request, res: Response) =
  */
 export const resetPassword = asyncHandler(async (req: Request, res: Response) => {
   const result = await authService.resetPassword(req.body);
-  console.log(`[Auth] Password reset completed for user: ${result.user.id}`);
+  logger.audit('auth.password_reset', { userId: result.user.id, ip: req.ip });
 
   res.json({
     success: true,
@@ -93,6 +105,11 @@ export const getMe = asyncHandler(async (req: Request, res: Response) => {
  */
 export const updateProfile = asyncHandler(async (req: Request, res: Response) => {
   const result = await authService.updateProfile(req.user!.userId, req.body);
+  logger.audit('auth.profile_updated', {
+    userId: req.user!.userId,
+    ip: req.ip,
+    metadata: { fields: Object.keys(req.body) },
+  });
 
   res.json({
     success: true,
@@ -106,7 +123,7 @@ export const updateProfile = asyncHandler(async (req: Request, res: Response) =>
  */
 export const changePassword = asyncHandler(async (req: Request, res: Response) => {
   await authService.changePassword(req.user!.userId, req.body);
-  console.log(`[Auth] Password changed for user: ${req.user!.userId}`);
+  logger.audit('auth.password_changed', { userId: req.user!.userId, ip: req.ip });
 
   res.json({
     success: true,
@@ -119,10 +136,14 @@ export const changePassword = asyncHandler(async (req: Request, res: Response) =
  * Login existing user
  */
 export const login = asyncHandler(async (req: Request, res: Response) => {
-  console.log(`[Auth] Login attempt for email: ${req.body.email}`);
+  logger.debug(`[Auth] Login attempt for email: ${req.body.email}`);
   const result = await authService.login(req.body);
-  console.log(`[Auth] Login successful for user: ${result.user.id}`);
-  
+  logger.audit('auth.login', {
+    userId: result.user.id,
+    ip: req.ip,
+    metadata: { email: result.user.email },
+  });
+
   res.json({
     success: true,
     data: result,

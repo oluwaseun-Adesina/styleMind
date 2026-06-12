@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { AppError } from './errors.js';
+import { logger } from './logger.js';
 
 /**
  * Global error handler middleware
@@ -7,7 +8,7 @@ import { AppError } from './errors.js';
  */
 export const errorHandler = (
   error: Error,
-  _request: Request,
+  request: Request,
   response: Response,
   _next: NextFunction
 ): void => {
@@ -70,8 +71,8 @@ export const errorHandler = (
     return;
   }
 
-  // Log unexpected errors
-  console.error('Unexpected error:', error);
+  // Log unexpected errors (persisted to the audit trail in production)
+  logger.error(`Unexpected error on ${request.method} ${request.path}`, error);
 
   // Return generic error for unhandled cases
   response.status(500).json({

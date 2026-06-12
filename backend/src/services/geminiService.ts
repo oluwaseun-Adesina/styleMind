@@ -3,6 +3,7 @@ import { getAI } from '../config/ai';
 import { ClothingItem, ItemAnalysis, OutfitSuggestion } from '../../../shared/types';
 import { MAX_IMAGE_BASE64_CHARS } from '../config/constants.js';
 import { env } from '../config/env.js';
+import { logger } from '../utils/logger.js';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || GEMINI_MODEL;
@@ -299,7 +300,7 @@ export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDeta
     'no mannequins, no humans, no faces, no bodies',
   ].join(', ');
 
-  console.log(`[ImageGen] Requesting Google Gemini Image generation for occasion: "${suggestion.occasion}"...`);
+  logger.info(`[ImageGen] Requesting Google Gemini Image generation for occasion: "${suggestion.occasion}"...`);
 
   try {
     const response = await getAI().models.generateContent({
@@ -321,19 +322,21 @@ export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDeta
       throw new Error('No image inlineData returned from Gemini API.');
     }
 
-    console.log('[ImageGen] Google Gemini Image generation succeeded.');
+    logger.info('[ImageGen] Google Gemini Image generation succeeded.');
 
     return { 
       imageBase64: inlineImage.inlineData.data as string, 
       mimeType: inlineImage.inlineData.mimeType || 'image/jpeg' 
     };
   } catch (error: any) {
-    console.error(`[ImageGen] Google Gemini Image generation failed: ${error?.message || error}. Trying Hugging Face...`);
+    // Warn (persisted in prod): fallback images are lower quality, so a spike
+    // in these means users are quietly getting degraded results.
+    logger.warn(`[ImageGen] Google Gemini Image generation failed: ${error?.message || error}. Trying Hugging Face...`);
 
     if (env.HF_TOKEN) {
       try {
         const hfModel = 'black-forest-labs/FLUX.1-schnell';
-        console.log(`[ImageGen] Requesting Hugging Face Image generation (${hfModel})...`);
+        logger.info(`[ImageGen] Requesting Hugging Face Image generation (${hfModel})...`);
 
         const hfResponse = await fetch(
           `https://router.huggingface.co/hf-inference/models/${hfModel}`,
@@ -359,19 +362,19 @@ export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDeta
         const imageBase64 = Buffer.from(buffer).toString('base64');
         const mimeType = hfResponse.headers.get('content-type') || 'image/jpeg';
 
-        console.log('[ImageGen] Hugging Face image generation succeeded.');
+        logger.info('[ImageGen] Hugging Face image generation succeeded.');
 
         return { imageBase64, mimeType };
       } catch (hfError: any) {
-        console.error(`[ImageGen] Hugging Face Image generation failed: ${hfError?.message || hfError}. Falling back to pollinations.ai...`);
+        logger.warn(`[ImageGen] Hugging Face Image generation failed: ${hfError?.message || hfError}. Falling back to pollinations.ai...`);
       }
     } else {
-      console.log('[ImageGen] HF_TOKEN is not configured, skipping Hugging Face fallback...');
+      logger.info('[ImageGen] HF_TOKEN is not configured, skipping Hugging Face fallback...');
     }
 
     // Fallback to pollinations.ai
     const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=768&height=1024&model=flux&nologo=true`;
-    console.log(`[ImageGen] Requesting pollinations.ai fallback...`);
+    logger.info(`[ImageGen] Requesting pollinations.ai fallback...`);
     
     const response = await fetch(url, { signal: AbortSignal.timeout(60000) });
 
@@ -383,7 +386,7 @@ export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDeta
     const imageBase64 = Buffer.from(buffer).toString('base64');
     const mimeType = response.headers.get('content-type') || 'image/jpeg';
 
-    console.log('[ImageGen] Fallback image generation succeeded.');
+    logger.info('[ImageGen] Fallback image generation succeeded.');
 
     return { imageBase64, mimeType };
   }

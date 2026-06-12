@@ -9,6 +9,7 @@ import { getRecentlyWornItemNames } from './lookbookService.js';
 import { getEventForDate } from './eventService.js';
 import { buildStyleContext, AUTO_STYLE_PROMPT } from '../utils/styleContext.js';
 import { AppError } from '../utils/errors.js';
+import { logger } from '../utils/logger.js';
 import type { OutfitSuggestionInput, AnalyzeItemInput, OutfitImageInput } from '../utils/schemas.js';
 import type { ClothingItem } from '../../../shared/types';
 
@@ -237,7 +238,7 @@ export const getOutfitSuggestion = async (
     if (error instanceof AppError) {
       throw error;
     }
-    console.error('Outfit suggestion failed:', error);
+    logger.error('Outfit suggestion failed', error as Error);
     throw new AppError('Failed to generate outfit suggestion', 500);
   }
 };
@@ -274,7 +275,7 @@ export const getOutfitImage = async (
     if (error instanceof AppError) {
       throw error;
     }
-    console.error('Outfit image generation failed:', error);
+    logger.error('Outfit image generation failed', error as Error);
     throw new AppError('Failed to generate outfit image', 500);
   }
 };
@@ -297,7 +298,7 @@ export const analyzeClothingItem = async (
     if (error instanceof Error) {
       throw new AppError(error.message, 400);
     }
-    console.error('Image analysis failed:', error);
+    logger.error('Image analysis failed', error as Error);
     throw new AppError('Failed to analyze image', 500);
   }
 };

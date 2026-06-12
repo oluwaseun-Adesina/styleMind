@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { asyncHandler } from '../utils/errorHandler.js';
+import { logger } from '../utils/logger.js';
 import * as wardrobeService from '../services/wardrobeService.js';
 
 /**
@@ -8,10 +9,9 @@ import * as wardrobeService from '../services/wardrobeService.js';
  */
 export const getWardrobe = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  console.log(`[Wardrobe] Fetching wardrobe items for user: ${userId}`);
   const items = await wardrobeService.getWardrobeItems(userId);
-  console.log(`[Wardrobe] Found ${items.length} items for user: ${userId}`);
-  
+  logger.debug(`[Wardrobe] Found ${items.length} items for user: ${userId}`);
+
   res.json({
     success: true,
     data: items,
@@ -25,10 +25,13 @@ export const getWardrobe = asyncHandler(async (req: Request, res: Response) => {
  */
 export const addItem = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  console.log(`[Wardrobe] Adding new item for user: ${userId}, item: ${req.body.name} (${req.body.type})`);
   const item = await wardrobeService.addWardrobeItem(userId, req.body);
-  console.log(`[Wardrobe] Successfully added item: ${item.id} for user: ${userId}`);
-  
+  logger.audit('wardrobe.item_added', {
+    userId,
+    ip: req.ip,
+    metadata: { itemId: item.id, name: item.name, type: item.type },
+  });
+
   res.status(201).json({
     success: true,
     data: item,
@@ -42,9 +45,12 @@ export const addItem = asyncHandler(async (req: Request, res: Response) => {
 export const updateItem = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const itemId = req.params.id;
-  console.log(`[Wardrobe] Updating item: ${itemId} for user: ${userId}`);
   const item = await wardrobeService.updateWardrobeItem(userId, itemId, req.body);
-  console.log(`[Wardrobe] Successfully updated item: ${itemId} for user: ${userId}`);
+  logger.audit('wardrobe.item_updated', {
+    userId,
+    ip: req.ip,
+    metadata: { itemId, fields: Object.keys(req.body) },
+  });
 
   res.json({
     success: true,
@@ -59,10 +65,13 @@ export const updateItem = asyncHandler(async (req: Request, res: Response) => {
 export const removeItem = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const itemId = req.params.id;
-  console.log(`[Wardrobe] Request to remove item: ${itemId} by user: ${userId}`);
   await wardrobeService.removeWardrobeItem(userId, itemId);
-  console.log(`[Wardrobe] Successfully removed item: ${itemId} for user: ${userId}`);
-  
+  logger.audit('wardrobe.item_removed', {
+    userId,
+    ip: req.ip,
+    metadata: { itemId },
+  });
+
   res.json({
     success: true,
     message: 'Item removed successfully',

@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger.js';
+
 const WEATHER_API_KEY = process.env.OPENWEATHER_API_KEY;
 
 export async function getWeather(lat: number, lon: number) {
@@ -20,7 +22,7 @@ export async function getWeather(lat: number, lon: number) {
       city: data.name
     };
   } catch (error) {
-    console.error('Failed to fetch weather', error);
+    logger.warn('Failed to fetch weather', error as Error);
     return null;
   }
 }

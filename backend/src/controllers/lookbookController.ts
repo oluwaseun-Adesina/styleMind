@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { asyncHandler } from '../utils/errorHandler.js';
+import { logger } from '../utils/logger.js';
 import * as lookbookService from '../services/lookbookService.js';
 
 /**
@@ -8,10 +9,9 @@ import * as lookbookService from '../services/lookbookService.js';
  */
 export const getLookbook = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  console.log(`[Lookbook] Fetching saved outfits for user: ${userId}`);
   const outfits = await lookbookService.getLookbook(userId);
-  console.log(`[Lookbook] Found ${outfits.length} saved outfits for user: ${userId}`);
-  
+  logger.debug(`[Lookbook] Found ${outfits.length} saved outfits for user: ${userId}`);
+
   res.json({
     success: true,
     data: outfits,
@@ -25,10 +25,13 @@ export const getLookbook = asyncHandler(async (req: Request, res: Response) => {
  */
 export const saveOutfit = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
-  console.log(`[Lookbook] Saving outfit suggestion for user: ${userId}, occasion: "${req.body.occasion}"`);
   const outfit = await lookbookService.saveOutfit(userId, req.body);
-  console.log(`[Lookbook] Successfully saved outfit: ${outfit.id} for user: ${userId}`);
-  
+  logger.audit('lookbook.outfit_saved', {
+    userId,
+    ip: req.ip,
+    metadata: { outfitId: outfit.id, occasion: req.body.occasion },
+  });
+
   res.status(201).json({
     success: true,
     data: outfit,
@@ -43,6 +46,11 @@ export const markWorn = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const outfitId = req.params.id;
   const outfit = await lookbookService.markOutfitWorn(userId, outfitId);
+  logger.audit('lookbook.outfit_worn', {
+    userId,
+    ip: req.ip,
+    metadata: { outfitId },
+  });
 
   res.json({
     success: true,
@@ -57,10 +65,13 @@ export const markWorn = asyncHandler(async (req: Request, res: Response) => {
 export const removeOutfit = asyncHandler(async (req: Request, res: Response) => {
   const userId = req.user!.userId;
   const outfitId = req.params.id;
-  console.log(`[Lookbook] Request to remove saved outfit: ${outfitId} by user: ${userId}`);
   await lookbookService.removeOutfit(userId, outfitId);
-  console.log(`[Lookbook] Successfully removed saved outfit: ${outfitId} for user: ${userId}`);
-  
+  logger.audit('lookbook.outfit_removed', {
+    userId,
+    ip: req.ip,
+    metadata: { outfitId },
+  });
+
   res.json({
     success: true,
     message: 'Outfit removed successfully',

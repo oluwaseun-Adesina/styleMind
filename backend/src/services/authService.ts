@@ -6,6 +6,7 @@ import { User } from '../models/User.js';
 import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
 import { isAllowedAudience } from '../utils/audience.js';
+import { logger } from '../utils/logger.js';
 import { sendPasswordResetEmail } from './emailService.js';
 import type {
   SignupInput,
@@ -283,7 +284,7 @@ export const forgotPassword = async (input: ForgotPasswordInput): Promise<void> 
     await sendPasswordResetEmail(user.email, code);
   } catch (err) {
     // Don't leak account existence through error responses; just log.
-    console.error('[Auth] Failed to send password reset email', err);
+    logger.error('[Auth] Failed to send password reset email', err as Error);
   }
 };
 

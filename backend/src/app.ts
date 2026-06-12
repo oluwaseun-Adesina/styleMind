@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { errorHandler, notFoundHandler } from './utils/errorHandler.js';
+import { logger } from './utils/logger.js';
 import authRoutes from './routes/authRoutes.js';
 import wardrobeRoutes from './routes/wardrobeRoutes.js';
 import lookbookRoutes from './routes/lookbookRoutes.js';
@@ -40,12 +41,12 @@ app.use(cors({
 app.use(express.json({ limit: '6mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-// Request logging middleware
+// Request logging middleware (development only — silent in production)
 app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
+    logger.info(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
   });
   next();
 });

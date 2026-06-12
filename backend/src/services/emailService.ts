@@ -1,4 +1,5 @@
 import { env } from '../config/env.js';
+import { logger } from '../utils/logger.js';
 
 // Sends transactional email through the Resend HTTP API when RESEND_API_KEY is
 // configured. Without a key (local dev) the message is logged to the console
@@ -13,7 +14,10 @@ type EmailMessage = {
 
 export const sendEmail = async (message: EmailMessage): Promise<void> => {
   if (!env.RESEND_API_KEY) {
-    console.log(`[Email:dev] To: ${message.to} | Subject: ${message.subject}\n${message.text}`);
+    // Dev: print the message (incl. reset codes) so the flow stays testable.
+    // Prod: never print secrets — record that the email could not be sent.
+    logger.info(`[Email:dev] To: ${message.to} | Subject: ${message.subject}\n${message.text}`);
+    logger.warn(`Email not sent (RESEND_API_KEY missing): "${message.subject}" to ${message.to}`);
     return;
   }
 
