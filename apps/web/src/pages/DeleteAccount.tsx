@@ -6,7 +6,9 @@ import { API_BASE } from '../services/apiClient';
 // reinstalling the app. Email+password accounts can delete directly here;
 // Google-sign-in accounts are directed to the in-app flow or email.
 
-const CONTACT_EMAIL = 'oluwaseunadesina8@gmail.com';
+// Public-facing support contact. Override at deploy with VITE_CONTACT_EMAIL to
+// avoid exposing a personal address on the Play Store listing.
+const CONTACT_EMAIL = import.meta.env.VITE_CONTACT_EMAIL || 'oluwaseunadesina8@gmail.com';
 
 export default function DeleteAccount() {
   const [email, setEmail] = useState('');

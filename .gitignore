@@ -10,3 +10,6 @@ coverage/
 !.env.example
 test-results/
 playwright-report/
+
+# Stale root-owned backup dir (remove from disk with: sudo rm -rf backend/src/utils.nobody-backup-leftover)
+backend/src/utils.nobody-backup-leftover/

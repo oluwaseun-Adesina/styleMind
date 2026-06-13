@@ -4,7 +4,9 @@ import type { ReactNode } from 'react';
 // listing (Google requires a privacy policy URL for apps that collect
 // personal data).
 
-const CONTACT_EMAIL = 'oluwaseunadesina8@gmail.com';
+// Public-facing support contact. Override at deploy with VITE_CONTACT_EMAIL to
+// avoid exposing a personal address on the Play Store listing.
+const CONTACT_EMAIL = import.meta.env.VITE_CONTACT_EMAIL || 'oluwaseunadesina8@gmail.com';
 
 const Section = ({ title, children }: { title: string; children: ReactNode }) => (
   <section className="mb-8">

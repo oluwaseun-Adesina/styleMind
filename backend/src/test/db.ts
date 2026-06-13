@@ -1,15 +1,17 @@
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 import { User } from '../models/User.js';
 
-let mongod: MongoMemoryServer | null = null;
+let mongod: MongoMemoryReplSet | null = null;
 
 /**
  * Boot an in-memory MongoDB and connect mongoose. Call in beforeAll.
+ * A single-node replica set (not a standalone) so multi-document transactions
+ * work in tests, matching a production Atlas/replica-set deployment.
  */
 export const startTestDb = async (): Promise<void> => {
-  mongod = await MongoMemoryServer.create();
+  mongod = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongod.getUri());
 };
 

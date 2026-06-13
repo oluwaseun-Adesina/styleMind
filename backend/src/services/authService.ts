@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { OAuth2Client } from 'google-auth-library';
@@ -408,13 +409,42 @@ export const deleteAccount = async (userId: string, input: DeleteAccountInput): 
   }
 
   const email = user.email;
-  // Remove the user's data first so a failure can't leave an orphaned login.
-  await Promise.all([
-    Wardrobe.deleteMany({ uid: user._id }),
-    SavedOutfit.deleteMany({ uid: user._id }),
-    Event.deleteMany({ uid: user._id }),
-  ]);
-  await user.deleteOne();
+  const uid = user._id;
+
+  // Delete data before the user so a mid-run failure leaves the account intact
+  // and safely retryable, never orphaned data without a login. deleteMany is
+  // idempotent, so re-running cleans up any remainder.
+  const purge = async (session?: mongoose.ClientSession) => {
+    const opts = session ? { session } : {};
+    await Wardrobe.deleteMany({ uid }, opts);
+    await SavedOutfit.deleteMany({ uid }, opts);
+    await Event.deleteMany({ uid }, opts);
+    await User.deleteOne({ _id: uid }, opts);
+  };
+
+  // Prefer an atomic transaction (all-or-nothing). Falls back to best-effort
+  // sequential deletes on standalone MongoDB, which doesn't support them.
+  try {
+    await mongoose.connection.transaction(purge);
+  } catch (err) {
+    if (!isTransactionUnsupported(err)) {
+      throw err;
+    }
+    await purge();
+  }
 
   return { email };
+};
+
+/**
+ * True when an error indicates the MongoDB deployment can't run transactions
+ * (standalone server rather than a replica set / mongos).
+ */
+const isTransactionUnsupported = (err: unknown): boolean => {
+  const e = err as { code?: number; codeName?: string; message?: string };
+  return (
+    e?.codeName === 'IllegalOperation' ||
+    e?.code === 20 ||
+    /replica set|transaction numbers|transactions are not supported/i.test(e?.message ?? '')
+  );
 };
