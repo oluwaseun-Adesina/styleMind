@@ -3,6 +3,9 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import { OAuth2Client } from 'google-auth-library';
 import { User } from '../models/User.js';
+import { Wardrobe } from '../models/Wardrobe.js';
+import { SavedOutfit } from '../models/SavedOutfit.js';
+import { Event } from '../models/Event.js';
 import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
 import { isAllowedAudience } from '../utils/audience.js';
@@ -16,6 +19,7 @@ import type {
   ResetPasswordInput,
   ChangePasswordInput,
   UpdateProfileInput,
+  DeleteAccountInput,
 } from '../utils/schemas.js';
 
 const JWT_SECRET = env.JWT_SECRET;
@@ -379,4 +383,38 @@ export const updateProfile = async (userId: string, input: UpdateProfileInput) =
     name: user.name || user.email.split('@')[0],
     picture: user.picture || undefined,
   };
+};
+
+/**
+ * Permanently delete the account and all user data (wardrobe, saved outfits,
+ * events). Accounts with a password must re-verify it; Google-only accounts
+ * confirm with the typed phrase alone (validated by the schema).
+ * Required for Play Store account-deletion compliance.
+ */
+export const deleteAccount = async (userId: string, input: DeleteAccountInput): Promise<{ email: string }> => {
+  const user = await User.findById(userId).select('+password');
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+
+  if (user.password) {
+    if (!input.password) {
+      throw new AppError('Password is required to delete this account', 400);
+    }
+    const isMatch = await bcrypt.compare(input.password, user.password);
+    if (!isMatch) {
+      throw new AppError('Password is incorrect', 401);
+    }
+  }
+
+  const email = user.email;
+  // Remove the user's data first so a failure can't leave an orphaned login.
+  await Promise.all([
+    Wardrobe.deleteMany({ uid: user._id }),
+    SavedOutfit.deleteMany({ uid: user._id }),
+    Event.deleteMany({ uid: user._id }),
+  ]);
+  await user.deleteOne();
+
+  return { email };
 };

@@ -3,6 +3,9 @@ import request from 'supertest';
 import app from '../../app.js';
 import { startTestDb, stopTestDb, clearDb, createUserWithToken } from '../../test/db.js';
 import { User } from '../../models/User.js';
+import { Wardrobe } from '../../models/Wardrobe.js';
+import { SavedOutfit } from '../../models/SavedOutfit.js';
+import { Event } from '../../models/Event.js';
 import { sendPasswordResetEmail } from '../../services/emailService.js';
 
 vi.mock('../../services/emailService.js', () => ({
@@ -171,5 +174,69 @@ describe('account settings', () => {
     expect(res.status).toBe(200);
 
     expect((await request(app).post('/api/auth/login').send({ email, password: 'their-first-pass' })).status).toBe(200);
+  });
+});
+
+describe('DELETE /api/auth/me (account deletion)', () => {
+  it('deletes the account and all user data with the correct password', async () => {
+    const { body } = await signup('gone@example.com');
+    const auth = { Authorization: `Bearer ${body.data.token}` };
+
+    // Seed data in every collection that must be cascaded.
+    await request(app)
+      .post('/api/wardrobes')
+      .set(auth)
+      .send({ name: 'White Tee', color: 'white', type: 'top', formality: 'casual' });
+    const user = await User.findOne({ email: 'gone@example.com' });
+    await SavedOutfit.create({
+      uid: user!._id,
+      occasion: 'casual day',
+      top: { name: 'White Tee', reason: 'clean' },
+      bottom: { name: 'Jeans', reason: 'classic' },
+      shoes: { name: 'Sneakers', reason: 'comfy' },
+      accessory: { name: 'Watch', reason: 'timeless' },
+    });
+    await Event.create({ uid: user!._id, title: 'Dinner', date: '2026-07-01' });
+
+    const res = await request(app)
+      .delete('/api/auth/me')
+      .set(auth)
+      .send({ confirm: 'DELETE', password: 'supersecret' });
+    expect(res.status).toBe(200);
+
+    expect(await User.findOne({ email: 'gone@example.com' })).toBeNull();
+    expect(await Wardrobe.countDocuments({ uid: user!._id })).toBe(0);
+    expect(await SavedOutfit.countDocuments({ uid: user!._id })).toBe(0);
+    expect(await Event.countDocuments({ uid: user!._id })).toBe(0);
+
+    // Credentials no longer work.
+    expect((await request(app).post('/api/auth/login').send({ email: 'gone@example.com', password: 'supersecret' })).status).toBe(401);
+  });
+
+  it('rejects a wrong or missing password and a missing confirm phrase', async () => {
+    const { body } = await signup('stays@example.com');
+    const auth = { Authorization: `Bearer ${body.data.token}` };
+
+    expect((await request(app).delete('/api/auth/me').set(auth).send({ confirm: 'DELETE', password: 'wrong-pass' })).status).toBe(401);
+    expect((await request(app).delete('/api/auth/me').set(auth).send({ confirm: 'DELETE' })).status).toBe(400);
+    expect((await request(app).delete('/api/auth/me').set(auth).send({ password: 'supersecret' })).status).toBe(400);
+
+    expect(await User.findOne({ email: 'stays@example.com' })).not.toBeNull();
+  });
+
+  it('lets a Google-only account delete without a password', async () => {
+    const { authHeader, email } = await createUserWithToken('google-gone@example.com');
+
+    const res = await request(app)
+      .delete('/api/auth/me')
+      .set('Authorization', authHeader)
+      .send({ confirm: 'DELETE' });
+    expect(res.status).toBe(200);
+
+    expect(await User.findOne({ email })).toBeNull();
+  });
+
+  it('requires auth', async () => {
+    expect((await request(app).delete('/api/auth/me').send({ confirm: 'DELETE' })).status).toBe(401);
   });
 });

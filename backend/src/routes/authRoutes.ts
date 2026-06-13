@@ -9,6 +9,7 @@ import {
   getMe,
   updateProfile,
   changePassword,
+  deleteAccount,
 } from '../controllers/authController.js';
 import { validateBody } from '../middleware/validation.js';
 import { authenticateToken } from '../middleware/auth.js';
@@ -21,6 +22,7 @@ import {
   resetPasswordSchema,
   changePasswordSchema,
   updateProfileSchema,
+  deleteAccountSchema,
 } from '../utils/schemas.js';
 
 const router = Router();
@@ -36,5 +38,6 @@ router.post('/reset-password', validateBody(resetPasswordSchema), resetPassword)
 router.get('/me', authenticateToken, getMe);
 router.patch('/me', authenticateToken, validateBody(updateProfileSchema), updateProfile);
 router.post('/change-password', authenticateToken, validateBody(changePasswordSchema), changePassword);
+router.delete('/me', authenticateToken, validateBody(deleteAccountSchema), deleteAccount);
 
 export default router;

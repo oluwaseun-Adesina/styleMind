@@ -132,6 +132,26 @@ export const changePassword = asyncHandler(async (req: Request, res: Response) =
 });
 
 /**
+ * DELETE /api/auth/me
+ * Permanently delete the account and all associated data.
+ * Required by Google Play's account-deletion policy.
+ */
+export const deleteAccount = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const result = await authService.deleteAccount(userId, req.body);
+  logger.audit('auth.account_deleted', {
+    userId,
+    ip: req.ip,
+    metadata: { email: result.email },
+  });
+
+  res.json({
+    success: true,
+    data: { message: 'Account deleted' },
+  });
+});
+
+/**
  * POST /api/auth/login
  * Login existing user
  */

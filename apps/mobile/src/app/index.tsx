@@ -122,6 +122,8 @@ export default function AppScreen() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [settingsNewPassword, setSettingsNewPassword] = useState('');
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   // New item form state. When editingItemId is set, the Add Item modal acts
   // as an edit form for that wardrobe item instead.
@@ -274,6 +276,7 @@ export default function AppScreen() {
     setSettingsName(user?.name || '');
     setCurrentPassword('');
     setSettingsNewPassword('');
+    setDeletePassword('');
     try {
       const me = await apiFetch<{ name?: string; hasPassword: boolean }>('/api/auth/me');
       setHasPassword(me.hasPassword);
@@ -324,6 +327,41 @@ export default function AppScreen() {
     } finally {
       setIsSavingSettings(false);
     }
+  };
+
+  // Permanently delete the account and all data (Play Store requirement).
+  const handleDeleteAccount = () => {
+    if (hasPassword && !deletePassword) return;
+    Alert.alert(
+      'Delete account?',
+      'This permanently deletes your account, wardrobe, saved outfits and events. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setIsDeletingAccount(true);
+            try {
+              await apiFetch('/api/auth/me', {
+                method: 'DELETE',
+                body: JSON.stringify({
+                  confirm: 'DELETE',
+                  ...(hasPassword ? { password: deletePassword } : {}),
+                }),
+              });
+              setIsSettingsOpen(false);
+              await handleLogout();
+              Alert.alert('Account deleted', 'Your account and all data have been removed.');
+            } catch (error) {
+              Alert.alert('Error', error instanceof ApiError ? error.message : 'Could not delete the account.');
+            } finally {
+              setIsDeletingAccount(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Fetch Wardrobe
@@ -1457,6 +1495,32 @@ export default function AppScreen() {
                 >
                   {isSavingSettings ? <ActivityIndicator color="white" /> : (
                     <Text className="text-white dark:text-black font-medium">{hasPassword ? 'Change Password' : 'Set Password'}</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              <View className="border-t border-[#E5E5E1] dark:border-gray-800 pt-6 mt-8 mb-2">
+                <Text className="text-[10px] uppercase font-bold text-red-500 mb-2">Delete Account</Text>
+                <Text className="text-xs text-[#8E8E8A] mb-3">
+                  Permanently removes your account, wardrobe, saved outfits and events. This cannot be undone.
+                </Text>
+                {hasPassword && (
+                  <TextInput
+                    value={deletePassword}
+                    onChangeText={setDeletePassword}
+                    placeholder="Enter your password to confirm"
+                    placeholderTextColor="#8E8E8A"
+                    secureTextEntry
+                    className="bg-[#F8F7F4] dark:bg-[#2A2A2A] p-4 rounded-xl text-base dark:text-white mb-3"
+                  />
+                )}
+                <TouchableOpacity
+                  onPress={handleDeleteAccount}
+                  disabled={isDeletingAccount || (hasPassword && !deletePassword)}
+                  className={`py-3 rounded-xl items-center ${hasPassword && !deletePassword ? 'bg-gray-300' : 'bg-red-600'}`}
+                >
+                  {isDeletingAccount ? <ActivityIndicator color="white" /> : (
+                    <Text className="text-white font-medium">Delete My Account</Text>
                   )}
                 </TouchableOpacity>
               </View>

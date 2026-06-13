@@ -47,6 +47,15 @@ export const updateProfileSchema = z.object({
   name: shortTextSchema('Name', 100),
 });
 
+export const deleteAccountSchema = z.object({
+  // Required for accounts that have a password; Google-only accounts confirm
+  // with the typed phrase alone.
+  password: z.string().min(1).max(128).optional(),
+  confirm: z.literal('DELETE', {
+    errorMap: () => ({ message: 'Type DELETE to confirm account deletion' }),
+  }),
+});
+
 // Wardrobe item schemas
 export const wardrobeItemSchema = z.object({
   name: shortTextSchema('Name', 100),
@@ -128,6 +137,7 @@ export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+export type DeleteAccountInput = z.infer<typeof deleteAccountSchema>;
 export type WardrobeItemInput = z.infer<typeof wardrobeItemSchema>;
 export type OutfitSuggestionInput = z.infer<typeof outfitSuggestionSchema>;
 export type OutfitImageInput = z.infer<typeof outfitImageSchema>;
