@@ -36,6 +36,13 @@
             "imageWidth": 76
           }
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "FitPick uses your photos so you can add clothing items from your gallery.",
+          "cameraPermission": "FitPick uses your camera so you can snap a photo of a clothing item."
+        }
       ]
     ],
     "experiments": {

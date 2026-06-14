@@ -14,7 +14,8 @@ import * as WebBrowser from 'expo-web-browser';
 import { 
   Plus, Trash2, Sparkles, Shirt, Footprints, Watch, Briefcase, 
   ChevronRight, X, LogIn, LogOut, User as UserIcon, Heart,
-  Mail, Lock, Sun, Moon, LayoutGrid, Settings, KeyRound, ArrowLeft, Pencil
+  Mail, Lock, Sun, Moon, LayoutGrid, Settings, KeyRound, ArrowLeft, Pencil,
+  Camera, Image as ImageIcon
 } from 'lucide-react-native';
 import { ClothingItem, OutfitSuggestion, ItemType, Formality, ItemAnalysis, SavedOutfitRecord, EventRecord } from '../types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -674,10 +675,28 @@ export default function AppScreen() {
     }
   };
 
-  const pickWardrobePhoto = async () => {
+  // Shared post-capture pipeline: downscale, then send for AI analysis.
+  const processPickedAsset = async (asset: ImagePicker.ImagePickerAsset) => {
+    const manipulatedResult = await manipulateAsync(
+      asset.uri,
+      [{ resize: { width: 800 } }],
+      { compress: 0.7, format: SaveFormat.JPEG, base64: true }
+    );
+
+    setSelectedImage(manipulatedResult.uri);
+
+    if (manipulatedResult.base64) {
+      await analyzeImage(manipulatedResult.base64, 'image/jpeg');
+    } else {
+      setImageError('Could not read the selected image. Try another photo.');
+    }
+  };
+
+  const pickFromGallery = async () => {
+    setImageError('');
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setImageError('Photo access is needed to scan an item.');
+      setImageError('Photo access is needed to add an item from your gallery.');
       return;
     }
 
@@ -693,20 +712,30 @@ export default function AppScreen() {
     if (result.canceled || !asset) {
       return;
     }
+    await processPickedAsset(asset);
+  };
 
-    const manipulatedResult = await manipulateAsync(
-      asset.uri,
-      [{ resize: { width: 800 } }],
-      { compress: 0.7, format: SaveFormat.JPEG, base64: true }
-    );
-
-    setSelectedImage(manipulatedResult.uri);
-
-    if (manipulatedResult.base64) {
-      await analyzeImage(manipulatedResult.base64, 'image/jpeg');
-    } else {
-      setImageError('Could not read the selected image. Try another photo.');
+  const takePhoto = async () => {
+    setImageError('');
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      setImageError('Camera access is needed to snap a photo of an item.');
+      return;
     }
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [4, 5],
+      quality: 0.7,
+      base64: true,
+    });
+
+    const asset = result.assets?.[0];
+    if (result.canceled || !asset) {
+      return;
+    }
+    await processPickedAsset(asset);
   };
 
   const addItem = async () => {
@@ -1559,15 +1588,28 @@ export default function AppScreen() {
 
               {itemMode === 'photo' && bulkItems.length === 0 && (
                 <View className="mb-5">
-                  <TouchableOpacity
-                    onPress={pickWardrobePhoto}
-                    disabled={isAnalyzingImage}
-                    className={`py-4 rounded-xl items-center ${isAnalyzingImage ? 'bg-gray-300' : 'bg-[#1A1A1A] dark:bg-white'}`}
-                  >
-                    {isAnalyzingImage ? <ActivityIndicator color="white" /> : (
-                      <Text className="text-white dark:text-black font-medium text-lg">Choose a Photo</Text>
-                    )}
-                  </TouchableOpacity>
+                  {isAnalyzingImage ? (
+                    <View className="py-4 rounded-xl items-center bg-gray-300">
+                      <ActivityIndicator color="white" />
+                    </View>
+                  ) : (
+                    <View className="flex-row gap-3">
+                      <TouchableOpacity
+                        onPress={takePhoto}
+                        className="flex-1 py-4 rounded-xl items-center justify-center flex-row gap-2 bg-[#1A1A1A] dark:bg-white"
+                      >
+                        <Camera color={nativeColorScheme === 'dark' ? '#1A1A1A' : 'white'} size={20} />
+                        <Text className="text-white dark:text-black font-medium">Take Photo</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={pickFromGallery}
+                        className="flex-1 py-4 rounded-xl items-center justify-center flex-row gap-2 bg-[#F8F7F4] dark:bg-[#2A2A2A]"
+                      >
+                        <ImageIcon color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={20} />
+                        <Text className="text-[#1A1A1A] dark:text-white font-medium">Gallery</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
                   {imageError ? (
                     <Text className="text-red-500 text-xs mt-2 text-center">{imageError}</Text>
                   ) : null}
