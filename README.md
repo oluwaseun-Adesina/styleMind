@@ -2,6 +2,8 @@
 
 Your personal AI stylist. FitPick keeps track of your wardrobe and suggests complete outfits — tuned to the occasion, the weather, the season, and what you've worn recently — then generates a flat-lay image of the look using only clothes you actually own.
 
+**Live web app:** https://fitpick-oluwaseun.netlify.app/
+
 ## Features
 
 - **Wardrobe management** — add items manually or snap a photo and let AI identify each garment (name, color, type, formality, and a material description used for image matching). Items can be edited any time.
