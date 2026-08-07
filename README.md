@@ -32,7 +32,7 @@ Your personal AI stylist. FitPick keeps track of your wardrobe and suggests comp
    npm --prefix backend install
    npm --prefix apps/mobile install   # only if working on mobile
    ```
-2. Configure the backend — copy [`backend/.env.example`](backend/.env.example) to `backend/.env` and fill in at least `MONGODB_URI`, `JWT_SECRET`, `GEMINI_API_KEY`, and `GOOGLE_CLIENT_ID`. Optional: `OPENWEATHER_API_KEY` (weather-aware picks), `RESEND_API_KEY` + `EMAIL_FROM` (password-reset emails; codes are logged to the console without it), `HF_TOKEN` (image-generation fallback).
+2. Configure the backend — copy [`backend/.env.example`](backend/.env.example) to `backend/.env` and fill in at least `MONGODB_URI`, `JWT_SECRET`, `GEMINI_API_KEY`, and `GOOGLE_CLIENT_ID`. See [Backend environment variables](#backend-environment-variables) below for the full list.
 3. Configure the web app — copy [`apps/web/.env.example`](apps/web/.env.example) to `apps/web/.env` (`VITE_API_BASE_URL`, `VITE_GOOGLE_CLIENT_ID`).
 4. Start the backend:
    ```sh
@@ -48,6 +48,86 @@ Your personal AI stylist. FitPick keeps track of your wardrobe and suggests comp
    ```
 
 The web app reads the API location from `VITE_API_BASE_URL`; mobile uses `EXPO_PUBLIC_API_BASE_URL` (both default to `http://localhost:8787`).
+
+### Backend environment variables
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `MONGODB_URI` | ✓ | MongoDB connection string |
+| `JWT_SECRET` | ✓ | Secret used to sign access/refresh tokens |
+| `GEMINI_API_KEY` | ✓ | Google Gemini key, used for outfit suggestions, item analysis, and image generation |
+| `GOOGLE_CLIENT_ID` | ✓ | OAuth client ID for "Sign in with Google" |
+| `GOOGLE_ALLOWED_AUDIENCES` | – | Comma-separated extra client IDs (e.g. native Android/iOS) whose Google ID tokens are also accepted |
+| `OPENWEATHER_API_KEY` | – | Enables weather-aware outfit suggestions |
+| `RESEND_API_KEY` / `EMAIL_FROM` | – | Send password-reset codes by email; without a key, codes are logged to the console (dev only) |
+| `HF_TOKEN` | – | Hugging Face token, used as an image-generation fallback |
+| `PORT` | – | API port (default `8787`) |
+| `ALLOWED_ORIGINS` | – | Comma-separated CORS allow-list |
+| `NEW_RELIC_LICENSE_KEY` / `NEW_RELIC_APP_NAME` | – | Mirrors audit-trail entries and errors to New Relic; full APM tracing requires `npm run start:apm` |
+| `AUDIT_LOG_RETENTION_DAYS` | – | Days to retain audit-trail entries in MongoDB (default `90`) |
+
+## API reference
+
+Base URL: `http://localhost:8787` locally. All request/response bodies are JSON. Authenticated routes require `Authorization: Bearer <accessToken>`.
+
+Rate limits (per IP, configurable via `RATE_LIMIT_MAX` / `AUTH_RATE_LIMIT_MAX` / `AI_RATE_LIMIT_MAX`): 15-min windows for auth and standard routes, 1-minute window for AI routes.
+
+#### Auth — `/api/auth`
+
+| Method & path | Auth | Body | Description |
+| --- | --- | --- | --- |
+| `POST /google` | – | `{ token }` | Sign in/up with a Google ID token |
+| `POST /signup` | – | `{ email, password, name? }` | Create an account |
+| `POST /login` | – | `{ email, password }` | Email/password sign-in |
+| `POST /refresh` | – | `{ refreshToken }` | Exchange a refresh token for a new access token |
+| `POST /forgot-password` | – | `{ email }` | Email a 6-digit reset code (logged to console without `RESEND_API_KEY`) |
+| `POST /reset-password` | – | `{ email, code, newPassword }` | Reset password with the emailed code |
+| `GET /me` | ✓ | – | Get the current user's profile |
+| `PATCH /me` | ✓ | `{ name }` | Update profile |
+| `POST /change-password` | ✓ | `{ currentPassword?, newPassword }` | Change password (`currentPassword` optional for Google-only accounts) |
+| `DELETE /me` | ✓ | `{ password?, confirm: "DELETE" }` | Delete account and all associated data |
+
+#### Wardrobe — `/api/wardrobes` (all routes ✓ authenticated)
+
+| Method & path | Body | Description |
+| --- | --- | --- |
+| `GET /` | – | List the user's wardrobe items |
+| `POST /` | `{ name, color, type, formality, description? }` | Add a wardrobe item |
+| `PUT /:id` | `{ name, color, type, formality, description? }` | Update a wardrobe item |
+| `DELETE /:id` | – | Remove a wardrobe item |
+
+`type`: `top` \| `bottom` \| `shoes` \| `accessory`. `formality`: `casual` \| `smart casual` \| `formal`.
+
+#### AI — `/api` (all routes ✓ authenticated, stricter rate limit)
+
+| Method & path | Body | Description |
+| --- | --- | --- |
+| `POST /outfit-suggestion` | `{ prompt?, auto?, variety?, count?, lat?, lon?, localHour?, localDate?, lockedItemId? }` | Get one or more outfit suggestions from the wardrobe, optionally weather/season/time-aware and built around a locked item. `prompt` is required unless `auto` is `true`. |
+| `POST /outfit-image` | `{ suggestion: { occasion, top, bottom, shoes, accessory, stylistNote, wardrobeGap?, wardrobeGapSearchTerm? } }` | Generate an editorial flat-lay image for a suggested outfit |
+| `POST /analyze-item` | `{ imageBase64, mimeType, hint? }` | Identify a garment from a photo (name, color, type, formality, description). `mimeType`: `image/jpeg` \| `image/png` \| `image/webp` \| `image/heic` \| `image/heif` |
+
+#### Events — `/api/events` (all routes ✓ authenticated)
+
+| Method & path | Body | Description |
+| --- | --- | --- |
+| `GET /` | – | List upcoming events |
+| `POST /` | `{ title, date, time? }` | Add an event (`date`: `YYYY-MM-DD`, `time`: `HH:MM`) |
+| `DELETE /:id` | – | Remove an event |
+
+#### Lookbook — `/api/saved_outfits` (all routes ✓ authenticated)
+
+| Method & path | Body | Description |
+| --- | --- | --- |
+| `GET /` | – | List saved outfits |
+| `POST /` | `{ occasion, top, bottom, shoes, accessory, stylistNote?, wardrobeGap?, wardrobeGapSearchTerm? }` | Save an outfit (`top`/`bottom`/`shoes`/`accessory` are `{ name, reason }`) |
+| `POST /:id/worn` | – | Mark a saved outfit as worn |
+| `DELETE /:id` | – | Remove a saved outfit |
+
+#### Misc
+
+| Method & path | Description |
+| --- | --- |
+| `GET /health` | Health check — `{ ok, timestamp, version }` |
 
 ## Tests
 
