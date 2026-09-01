@@ -63,7 +63,8 @@ export default function DeleteAccount() {
         <h1 className="text-3xl font-serif italic mt-4 mb-2 text-[#1A1A1A] dark:text-white">Delete Your Account</h1>
         <p className="text-sm leading-relaxed text-[#4A4A46] dark:text-[#B5B5B1] mb-8">
           Deleting your FitPick account permanently removes your profile, wardrobe items, saved outfits, and
-          calendar events. This cannot be undone.
+          calendar events. This cannot be undone. Anonymized activity logs are retained for up to 90 days
+          before they automatically expire.
         </p>
 
         {status === 'done' ? (
