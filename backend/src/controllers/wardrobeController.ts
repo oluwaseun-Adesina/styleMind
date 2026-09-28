@@ -39,6 +39,26 @@ export const addItem = asyncHandler(async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/wardrobes/bulk
+ * Add several wardrobe items in one request (bulk photo upload)
+ */
+export const addItems = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user!.userId;
+  const items = await wardrobeService.addWardrobeItems(userId, req.body.items);
+  logger.audit('wardrobe.items_bulk_added', {
+    userId,
+    ip: req.ip,
+    metadata: { count: items.length, itemIds: items.map((item) => item.id) },
+  });
+
+  res.status(201).json({
+    success: true,
+    data: items,
+    count: items.length,
+  });
+});
+
+/**
  * PUT /api/wardrobes/:id
  * Update wardrobe item
  */

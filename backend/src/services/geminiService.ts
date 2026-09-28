@@ -7,6 +7,8 @@ import { logger } from '../utils/logger.js';
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const GEMINI_IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || GEMINI_MODEL;
+// Image *generation* model (distinct from GEMINI_IMAGE_MODEL, which analyses photos).
+const GEMINI_IMAGE_GEN_MODEL = process.env.GEMINI_IMAGE_GEN_MODEL || 'gemini-2.5-flash-image';
 const VALID_ITEM_TYPES = ['top', 'bottom', 'shoes', 'accessory'] as const;
 const VALID_FORMALITIES = ['casual', 'smart casual', 'formal'] as const;
 const SUPPORTED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
@@ -276,12 +278,101 @@ export async function analyzeItemImage(imageBase64: string, mimeType: string, us
 }
 
 // Per-slot garment details pulled from the user's real wardrobe items, so the
-// generated image matches what they actually own (material, texture, fit).
+// generated image matches what they actually own (material, texture, fit, and
+// the item's photo when one was uploaded).
 export type OutfitItemDetails = Partial<
-  Record<'top' | 'bottom' | 'shoes' | 'accessory', { color?: string; description?: string }>
+  Record<'top' | 'bottom' | 'shoes' | 'accessory', { color?: string; description?: string; image?: string }>
 >;
 
-export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDetails?: OutfitItemDetails) {
+type OutfitImageSource = 'reference' | 'text' | 'huggingface' | 'pollinations';
+
+const OUTFIT_SLOTS = ['top', 'bottom', 'shoes', 'accessory'] as const;
+
+export const parseImageDataUrl = (dataUrl?: string) => {
+  const match = dataUrl?.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/);
+  return match ? { mimeType: match[1], base64: match[2] } : null;
+};
+
+const extractInlineImage = (response: any, label: string) => {
+  const inlineImage = response?.candidates?.[0]?.content?.parts?.find(
+    (part: any) => part.inlineData && part.inlineData.data
+  );
+  if (!inlineImage?.inlineData?.data) {
+    throw new Error(`No image inlineData returned from ${label}.`);
+  }
+  return {
+    imageBase64: inlineImage.inlineData.data as string,
+    mimeType: (inlineImage.inlineData.mimeType as string) || 'image/jpeg',
+  };
+};
+
+/**
+ * Image-conditioned generation: the user's real garment photos are passed to
+ * Gemini as reference images, so the model re-arranges the clothes they own
+ * instead of inventing garments from a text description.
+ */
+async function generateFromReferencePhotos(suggestion: OutfitSuggestion, itemDetails: OutfitItemDetails) {
+  const contents: ReturnType<typeof createPartFromText>[] = [
+    createPartFromText(
+      `Create an editorial fashion flat-lay photo of an outfit for "${suggestion.occasion}". ` +
+        'Reference photos of the exact garments follow. Reproduce each referenced garment faithfully — ' +
+        'same colour, material, pattern, logos/prints, hardware and silhouette. Do not substitute, restyle ' +
+        'or add garments.'
+    ),
+  ];
+
+  for (const slot of OUTFIT_SLOTS) {
+    const name = suggestion[slot].name;
+    const detail = itemDetails[slot];
+    const photo = parseImageDataUrl(detail?.image);
+    const extras = [detail?.color, detail?.description].filter(Boolean).join(', ');
+    if (photo) {
+      contents.push(createPartFromText(`Reference photo of the ${slot}: ${name}${extras ? ` (${extras})` : ''}.`));
+      contents.push(createPartFromBase64(photo.base64, photo.mimeType));
+    } else {
+      contents.push(createPartFromText(`The ${slot} (no photo available): ${name}${extras ? ` (${extras})` : ''}.`));
+    }
+  }
+
+  contents.push(
+    createPartFromText(
+      'Lay all four items out neatly on a neutral off-white studio background, top-down view, soft even ' +
+        'lighting, clean spacing, realistic fabric texture. Only the garments themselves — no hangers, ' +
+        'mannequins, people, bodies, faces, text, labels or watermarks.'
+    )
+  );
+
+  const response = await getAI().models.generateContent({
+    model: GEMINI_IMAGE_GEN_MODEL,
+    contents,
+    config: {
+      responseModalities: ['IMAGE'],
+      imageConfig: { aspectRatio: '3:4' },
+    },
+  });
+
+  return extractInlineImage(response, 'Gemini (reference photos)');
+}
+
+export async function generateOutfitImage(
+  suggestion: OutfitSuggestion,
+  itemDetails?: OutfitItemDetails
+): Promise<{ imageBase64: string; mimeType: string; source: OutfitImageSource }> {
+  const hasReferencePhotos = OUTFIT_SLOTS.some((slot) => parseImageDataUrl(itemDetails?.[slot]?.image));
+
+  if (itemDetails && hasReferencePhotos) {
+    try {
+      logger.info(`[ImageGen] Generating from reference photos for occasion: "${suggestion.occasion}"...`);
+      const result = await generateFromReferencePhotos(suggestion, itemDetails);
+      logger.info('[ImageGen] Reference-photo generation succeeded.');
+      return { ...result, source: 'reference' };
+    } catch (error: any) {
+      // Fall through to text-only generation; the response is labelled so the
+      // UI can tell the user the image is an approximation.
+      logger.warn(`[ImageGen] Reference-photo generation failed: ${error?.message || error}. Falling back to text-only.`);
+    }
+  }
+
   const part = (slot: keyof OutfitItemDetails, name: string) => {
     const detail = itemDetails?.[slot];
     const extras = [detail?.color, detail?.description].filter(Boolean).join(', ');
@@ -304,7 +395,7 @@ export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDeta
 
   try {
     const response = await getAI().models.generateContent({
-      model: 'gemini-2.5-flash-image',
+      model: GEMINI_IMAGE_GEN_MODEL,
       contents: prompt,
       config: {
         responseModalities: ['IMAGE'],
@@ -314,20 +405,11 @@ export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDeta
       },
     });
 
-    const inlineImage = response?.candidates?.[0]?.content?.parts?.find(
-      (part) => part.inlineData && part.inlineData.data
-    );
-
-    if (!inlineImage || !inlineImage.inlineData || !inlineImage.inlineData.data) {
-      throw new Error('No image inlineData returned from Gemini API.');
-    }
+    const result = extractInlineImage(response, 'Gemini API');
 
     logger.info('[ImageGen] Google Gemini Image generation succeeded.');
 
-    return { 
-      imageBase64: inlineImage.inlineData.data as string, 
-      mimeType: inlineImage.inlineData.mimeType || 'image/jpeg' 
-    };
+    return { ...result, source: 'text' };
   } catch (error: any) {
     // Warn (persisted in prod): fallback images are lower quality, so a spike
     // in these means users are quietly getting degraded results.
@@ -364,7 +446,7 @@ export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDeta
 
         logger.info('[ImageGen] Hugging Face image generation succeeded.');
 
-        return { imageBase64, mimeType };
+        return { imageBase64, mimeType, source: 'huggingface' };
       } catch (hfError: any) {
         logger.warn(`[ImageGen] Hugging Face Image generation failed: ${hfError?.message || hfError}. Falling back to pollinations.ai...`);
       }
@@ -388,6 +470,6 @@ export async function generateOutfitImage(suggestion: OutfitSuggestion, itemDeta
 
     logger.info('[ImageGen] Fallback image generation succeeded.');
 
-    return { imageBase64, mimeType };
+    return { imageBase64, mimeType, source: 'pollinations' };
   }
 }

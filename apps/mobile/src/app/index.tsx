@@ -17,10 +17,29 @@ import {
   Mail, Lock, Sun, Moon, LayoutGrid, Settings, KeyRound, ArrowLeft, Pencil,
   Camera, Image as ImageIcon, Shield
 } from 'lucide-react-native';
-import { ClothingItem, OutfitSuggestion, ItemType, Formality, ItemAnalysis, SavedOutfitRecord, EventRecord } from '../types';
+import { ClothingItem, OutfitSuggestion, ItemType, Formality, ItemAnalysis, SavedOutfitRecord, EventRecord, BulkAnalysisResult, OutfitImageResult } from '../types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getDailyOutfitSuggestion, getOutfitImage, getOutfitSuggestion, markOutfitWorn, getEvents, addEvent, removeEvent } from '../services/geminiService';
 import { apiFetch, ApiError, clearAuth, getToken, getUser, postJson, refreshSession, saveAuth, setAuthExpiredHandler } from '../apiClient';
+
+// Photos sent for AI analysis (bulk batches must fit the API body limit).
+const SCAN_MAX_WIDTH = 1024;
+// Thumbnails stored on the wardrobe item (~25KB each).
+const THUMB_MAX_WIDTH = 400;
+const MAX_PHOTOS_PER_SCAN = 30;
+const SCAN_BATCH_SIZE = 10; // backend max photos per /api/analyze-items call
+const BULK_SAVE_CHUNK = 20;
+
+// A scanned garment awaiting review before it's saved to the wardrobe.
+interface ReviewItem {
+  key: string;
+  name: string;
+  color: string;
+  type: ItemType;
+  formality: Formality;
+  description: string;
+  image?: string;
+}
 
 const DAILY_PICK_CACHE_KEY = 'dailyPickCache';
 const TODAYS_PLAN_KEY = 'todaysPlan';
@@ -86,12 +105,13 @@ export default function AppScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [isAddingItem, setIsAddingItem] = useState(false);
   const [itemMode, setItemMode] = useState<'manual' | 'photo'>('manual');
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [isAnalyzingImage, setIsAnalyzingImage] = useState(false);
   const [imageError, setImageError] = useState('');
-  const [photoAnalysis, setPhotoAnalysis] = useState<ItemAnalysis | null>(null);
   const [lockedItemId, setLockedItemId] = useState<string | null>(null);
-  const [bulkItems, setBulkItems] = useState<ItemAnalysis[]>([]);
+  const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
+  const [scanProgress, setScanProgress] = useState<{ done: number; total: number } | null>(null);
+  const [isSavingBulk, setIsSavingBulk] = useState(false);
+  const [outfitImageSource, setOutfitImageSource] = useState<OutfitImageResult['source']>();
   const [isAutoStyling, setIsAutoStyling] = useState(false);
   const [isDailyPick, setIsDailyPick] = useState(false);
   const [todaysPlan, setTodaysPlan] = useState('');
@@ -138,11 +158,10 @@ export default function AppScreen() {
     setNewItem({ type: 'top', formality: 'casual' });
     setEditingItemId(null);
     setItemMode('manual');
-    setSelectedImage(null);
     setImageError('');
     setIsAnalyzingImage(false);
-    setPhotoAnalysis(null);
-    setBulkItems([]);
+    setReviewItems([]);
+    setScanProgress(null);
   };
 
   const startEditItem = (item: ClothingItem) => {
@@ -154,6 +173,7 @@ export default function AppScreen() {
       type: item.type,
       formality: item.formality,
       description: item.description,
+      image: item.image,
     });
     setIsAddingItem(true);
   };
@@ -621,6 +641,7 @@ export default function AppScreen() {
     try {
       const result = await getOutfitImage(suggestion);
       setOutfitImageUri(`data:${result.mimeType};base64,${result.imageBase64}`);
+      setOutfitImageSource(result.source);
     } catch (error) {
       console.error("Failed to generate outfit image", error);
       Alert.alert("Error", error instanceof Error ? error.message : "Failed to generate outfit image.");
@@ -643,52 +664,140 @@ export default function AppScreen() {
     }
   };
 
-  const analyzeImage = async (base64: string, mimeType: string) => {
-    if (!token) return;
+  // Downscale a picked photo to a JPEG, returning its base64 payload.
+  const resizeAsset = async (uri: string, width: number, compress: number) => {
+    const result = await manipulateAsync(uri, [{ resize: { width } }], {
+      compress,
+      format: SaveFormat.JPEG,
+      base64: true,
+    });
+    if (!result.base64) throw new Error('Could not read one of the photos.');
+    return result.base64;
+  };
+
+  const toReviewItem = (item: ItemAnalysis, image?: string): ReviewItem => ({
+    key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    name: item.name,
+    color: item.color,
+    type: item.type,
+    formality: item.formality,
+    description: item.description || '',
+    image,
+  });
+
+  // Bulk scan: every picked photo is analysed (in batches the backend accepts)
+  // and each detected garment becomes an editable card, carrying a thumbnail
+  // of the photo it came from.
+  const scanAssets = async (assets: ImagePicker.ImagePickerAsset[]) => {
+    if (!token || !assets.length) return;
+    const picked = assets.slice(0, MAX_PHOTOS_PER_SCAN);
     setIsAnalyzingImage(true);
     setImageError('');
-    setBulkItems([]);
+    setScanProgress({ done: 0, total: picked.length });
+    const failures: string[] = [];
 
     try {
-      const data = await apiFetch<{ items: ItemAnalysis[] }>('/api/analyze-item', {
-        method: 'POST',
-        body: JSON.stringify({ imageBase64: base64, mimeType }),
-      });
-      const items = data.items as ItemAnalysis[];
+      for (let start = 0; start < picked.length; start += SCAN_BATCH_SIZE) {
+        const batch = picked.slice(start, start + SCAN_BATCH_SIZE);
+        const prepared: { label: string; scan: string; thumb: string }[] = [];
+        for (const [offset, asset] of batch.entries()) {
+          const label = `Photo ${start + offset + 1}`;
+          try {
+            // Resize the scan copy from the original, then the thumbnail.
+            const scanWidth = Math.min(SCAN_MAX_WIDTH, asset.width || SCAN_MAX_WIDTH);
+            const thumbWidth = Math.min(THUMB_MAX_WIDTH, asset.width || THUMB_MAX_WIDTH);
+            const scan = await resizeAsset(asset.uri, scanWidth, 0.8);
+            const thumb = await resizeAsset(asset.uri, thumbWidth, 0.72);
+            prepared.push({ label, scan, thumb: `data:image/jpeg;base64,${thumb}` });
+          } catch {
+            failures.push(`${label}: could not be read`);
+          }
+        }
 
-      if (items && items.length > 0) {
-        setBulkItems(items);
-        setPhotoAnalysis(items[0]);
-        setNewItem({
-          name: items[0].name,
-          color: items[0].color,
-          type: items[0].type,
-          formality: items[0].formality,
-          description: items[0].description,
-        });
+        if (prepared.length) {
+          try {
+            const { results } = await apiFetch<BulkAnalysisResult>(
+              '/api/analyze-items',
+              {
+                method: 'POST',
+                body: JSON.stringify({
+                  images: prepared.map((p) => ({ imageBase64: p.scan, mimeType: 'image/jpeg' })),
+                }),
+              },
+              120000
+            );
+            const found: ReviewItem[] = [];
+            for (const result of results) {
+              const source = prepared[result.index];
+              if (!source) continue;
+              if (result.error || !result.items.length) {
+                failures.push(`${source.label}: ${result.error || 'no clothing detected'}`);
+                continue;
+              }
+              found.push(...result.items.map((item) => toReviewItem(item, source.thumb)));
+            }
+            setReviewItems((prev) => [...prev, ...found]);
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : 'analysis failed';
+            prepared.forEach((p) => failures.push(`${p.label}: ${reason}`));
+          }
+        }
+
+        setScanProgress({ done: Math.min(start + batch.length, picked.length), total: picked.length });
       }
-    } catch (error) {
-      console.error('Failed to analyze wardrobe image', error);
-      setImageError(error instanceof Error ? error.message : 'Failed to analyze image.');
     } finally {
+      if (failures.length) {
+        setImageError(`${failures.length} photo${failures.length > 1 ? 's' : ''} couldn't be scanned — ${failures.join('; ')}`);
+      }
+      setScanProgress(null);
       setIsAnalyzingImage(false);
     }
   };
 
-  // Shared post-capture pipeline: downscale, then send for AI analysis.
-  const processPickedAsset = async (asset: ImagePicker.ImagePickerAsset) => {
-    const manipulatedResult = await manipulateAsync(
-      asset.uri,
-      [{ resize: { width: 800 } }],
-      { compress: 0.7, format: SaveFormat.JPEG, base64: true }
-    );
+  const updateReviewItem = (key: string, patch: Partial<ReviewItem>) => {
+    setReviewItems((prev) => prev.map((item) => (item.key === key ? { ...item, ...patch } : item)));
+  };
 
-    setSelectedImage(manipulatedResult.uri);
+  const removeReviewItem = (key: string) => {
+    setReviewItems((prev) => prev.filter((item) => item.key !== key));
+  };
 
-    if (manipulatedResult.base64) {
-      await analyzeImage(manipulatedResult.base64, 'image/jpeg');
-    } else {
-      setImageError('Could not read the selected image. Try another photo.');
+  const saveReviewItems = async () => {
+    if (!reviewItems.length || reviewItems.some((i) => !i.name.trim() || !i.color.trim())) return;
+    setIsSavingBulk(true);
+    setImageError('');
+    const pending = [...reviewItems];
+
+    try {
+      while (pending.length) {
+        const chunk = pending.slice(0, BULK_SAVE_CHUNK);
+        const saved = await apiFetch<ClothingItem[]>(
+          '/api/wardrobes/bulk',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              items: chunk.map((item) => ({
+                name: item.name.trim(),
+                color: item.color.trim(),
+                type: item.type,
+                formality: item.formality,
+                ...(item.description.trim() ? { description: item.description.trim() } : {}),
+                ...(item.image ? { image: item.image } : {}),
+              })),
+            }),
+          },
+          60000
+        );
+        pending.splice(0, chunk.length);
+        setWardrobe((prev) => [...prev, ...saved]);
+        // Drop saved cards so a later failure only leaves the unsaved ones.
+        setReviewItems([...pending]);
+      }
+      closeAddItemModal();
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : 'Could not save the items. Please try again.');
+    } finally {
+      setIsSavingBulk(false);
     }
   };
 
@@ -696,23 +805,22 @@ export default function AppScreen() {
     setImageError('');
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setImageError('Photo access is needed to add an item from your gallery.');
+      setImageError('Photo access is needed to add items from your gallery.');
       return;
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [4, 5],
-      quality: 0.7,
-      base64: true,
+      allowsMultipleSelection: true,
+      selectionLimit: MAX_PHOTOS_PER_SCAN,
+      orderedSelection: true,
+      quality: 0.8,
     });
 
-    const asset = result.assets?.[0];
-    if (result.canceled || !asset) {
+    if (result.canceled || !result.assets?.length) {
       return;
     }
-    await processPickedAsset(asset);
+    await scanAssets(result.assets);
   };
 
   const takePhoto = async () => {
@@ -727,15 +835,45 @@ export default function AppScreen() {
       mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [4, 5],
-      quality: 0.7,
-      base64: true,
+      quality: 0.8,
     });
 
-    const asset = result.assets?.[0];
-    if (result.canceled || !asset) {
+    if (result.canceled || !result.assets?.length) {
       return;
     }
-    await processPickedAsset(asset);
+    await scanAssets(result.assets);
+  };
+
+  // Attach a photo to a manually added / edited item (no AI analysis).
+  const pickItemPhoto = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Photo access needed', 'Allow photo access to add a picture of this item.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [4, 5],
+      quality: 0.8,
+    });
+    const asset = result.assets?.[0];
+    if (result.canceled || !asset) return;
+    try {
+      const thumb = await resizeAsset(asset.uri, Math.min(THUMB_MAX_WIDTH, asset.width || THUMB_MAX_WIDTH), 0.72);
+      setNewItem((prev) => ({ ...prev, image: `data:image/jpeg;base64,${thumb}` }));
+    } catch {
+      Alert.alert('Error', 'Could not read that photo. Try another one.');
+    }
+  };
+
+  // Look up the photo of the wardrobe item a suggestion refers to.
+  const findItemImage = (type: ItemType, name: string) => {
+    const clean = name.trim().toLowerCase();
+    const ofType = wardrobe.filter((i) => i.type === type);
+    return (
+      ofType.find((i) => i.name === name) ?? ofType.find((i) => i.name.trim().toLowerCase() === clean)
+    )?.image;
   };
 
   const addItem = async () => {
@@ -747,6 +885,7 @@ export default function AppScreen() {
           type: newItem.type as ItemType,
           formality: newItem.formality as Formality,
           ...(newItem.description?.trim() ? { description: newItem.description.trim() } : {}),
+          ...(newItem.image ? { image: newItem.image } : {}),
         };
 
         if (editingItemId) {
@@ -764,23 +903,10 @@ export default function AppScreen() {
           body: JSON.stringify(itemData),
         });
         setWardrobe([...wardrobe, addedItem]);
-
-        if (bulkItems.length > 1) {
-          const remaining = bulkItems.slice(1);
-          setBulkItems(remaining);
-          setPhotoAnalysis(remaining[0]);
-          setNewItem({
-            name: remaining[0].name,
-            color: remaining[0].color,
-            type: remaining[0].type,
-            formality: remaining[0].formality,
-            description: remaining[0].description,
-          });
-        } else {
-          closeAddItemModal();
-        }
+        closeAddItemModal();
       } catch (error) {
         console.error("Failed to add item", error);
+        Alert.alert('Error', error instanceof Error ? error.message : 'Failed to save the item.');
       }
     }
   };
@@ -1263,28 +1389,39 @@ export default function AppScreen() {
                     </TouchableOpacity>
                   )}
 
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-6 py-2">
+                  {/* Real-photo collage: the actual items, never generated */}
+                  <View className="flex-row flex-wrap justify-between mb-6">
                     {[
-                      { label: 'Top', name: suggestion.top.name, icon: <Shirt color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={24} /> },
-                      { label: 'Bottom', name: suggestion.bottom.name, icon: <Briefcase color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={24} /> },
-                      { label: 'Shoes', name: suggestion.shoes.name, icon: <Footprints color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={24} /> },
-                      { label: 'Accessory', name: suggestion.accessory.name, icon: <Watch color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={24} /> }
-                    ].map((item) => (
-                      <View key={item.label} className="items-center mr-6 w-24">
-                        <View className="w-16 h-16 rounded-2xl bg-white dark:bg-[#1E1E1E] border border-[#E5E5E1] dark:border-gray-800 items-center justify-center mb-2 shadow-sm">
-                          {item.icon}
+                      { label: 'Top', type: 'top' as ItemType, name: suggestion.top.name, icon: <Shirt color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={28} /> },
+                      { label: 'Bottom', type: 'bottom' as ItemType, name: suggestion.bottom.name, icon: <Briefcase color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={28} /> },
+                      { label: 'Shoes', type: 'shoes' as ItemType, name: suggestion.shoes.name, icon: <Footprints color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={28} /> },
+                      { label: 'Accessory', type: 'accessory' as ItemType, name: suggestion.accessory.name, icon: <Watch color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={28} /> }
+                    ].map((item) => {
+                      const photo = findItemImage(item.type, item.name);
+                      return (
+                        <View key={item.label} className="mb-4" style={{ width: '48%' }}>
+                          <View
+                            className="w-full rounded-2xl bg-white dark:bg-[#1E1E1E] border border-[#E5E5E1] dark:border-gray-800 items-center justify-center mb-2 overflow-hidden"
+                            style={{ aspectRatio: 4 / 5 }}
+                          >
+                            {photo ? (
+                              <Image source={{ uri: photo }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                            ) : (
+                              item.icon
+                            )}
+                          </View>
+                          <Text className="text-[9px] uppercase tracking-widest text-[#8E8E8A] font-bold mb-0.5">{item.label}</Text>
+                          <Text className="text-xs font-medium dark:text-gray-300" numberOfLines={2}>{item.name}</Text>
                         </View>
-                        <Text className="text-[8px] uppercase tracking-widest text-[#8E8E8A] font-bold text-center mb-0.5">{item.label}</Text>
-                        <Text className="text-[10px] font-medium text-center dark:text-gray-300" numberOfLines={2}>{item.name}</Text>
-                      </View>
-                    ))}
-                  </ScrollView>
+                      );
+                    })}
+                  </View>
 
                   <View className="bg-white dark:bg-[#1E1E1E] p-5 rounded-3xl border border-[#E5E5E1] dark:border-gray-800 mb-5">
                     <View className="flex-row items-center justify-between mb-4">
                       <View className="flex-1 mr-4">
-                        <Text className="text-[10px] uppercase tracking-widest text-[#8E8E8A] font-bold mb-1">Visual Preview</Text>
-                        <Text className="text-[#555552] dark:text-gray-400">Generate a flat-lay image of this outfit.</Text>
+                        <Text className="text-[10px] uppercase tracking-widest text-[#8E8E8A] font-bold mb-1">AI Styled Image</Text>
+                        <Text className="text-[#555552] dark:text-gray-400">Generate an editorial flat-lay from your item photos.</Text>
                       </View>
                       <TouchableOpacity
                         disabled={isGeneratingOutfitImage}
@@ -1303,6 +1440,11 @@ export default function AppScreen() {
                         )}
                       </TouchableOpacity>
                     </View>
+                    {outfitImageUri && outfitImageSource && outfitImageSource !== 'reference' ? (
+                      <Text className="text-xs text-[#8E8E8A] mb-3">
+                        Approximate image — generated from text, so garments may differ from yours. Add photos to these items for an accurate result.
+                      </Text>
+                    ) : null}
                     {outfitImageUri ? (
                       <Image
                         source={{ uri: outfitImageUri }}
@@ -1369,6 +1511,9 @@ export default function AppScreen() {
                         <View className="space-y-2">
                           {items.map(item => (
                             <View key={item.id} className="flex-row items-center justify-between p-4 bg-white dark:bg-[#1E1E1E] rounded-2xl border border-[#E5E5E1] dark:border-gray-800 mt-2">
+                              {item.image ? (
+                                <Image source={{ uri: item.image }} className="w-12 h-12 rounded-xl mr-3 bg-[#F8F7F4] dark:bg-[#2A2A2A]" resizeMode="cover" />
+                              ) : null}
                               <View className="flex-1 pr-3">
                                 <Text className="text-base font-medium dark:text-white">{item.name}</Text>
                                 <Text className="text-xs text-[#8E8E8A] uppercase tracking-wider mt-1">{item.color} • {item.formality}</Text>
@@ -1578,10 +1723,9 @@ export default function AppScreen() {
             <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
               <View className="flex-row justify-between items-center mb-6">
                 <View>
-                  <Text className="text-2xl font-serif italic dark:text-white">{editingItemId ? 'Edit Item' : 'Add Item'}</Text>
-                  {bulkItems.length > 0 && (
-                    <Text className="text-[10px] uppercase font-bold text-[#8E8E8A] mt-1">Reviewing: {bulkItems.length} found</Text>
-                  )}
+                  <Text className="text-2xl font-serif italic dark:text-white">
+                    {editingItemId ? 'Edit Item' : itemMode === 'photo' ? 'Add from Photos' : 'Add Item'}
+                  </Text>
                 </View>
                 <TouchableOpacity onPress={closeAddItemModal}>
                   <X color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={24} />
@@ -1594,16 +1738,24 @@ export default function AppScreen() {
                   <Text className={itemMode === 'manual' ? 'text-[#1A1A1A] dark:text-white font-medium' : 'text-[#8E8E8A]'}>Manual</Text>
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => setItemMode('photo')} className={`flex-1 py-3 rounded-lg items-center ${itemMode === 'photo' ? 'bg-white dark:bg-[#1E1E1E] shadow-sm' : ''}`}>
-                  <Text className={itemMode === 'photo' ? 'text-[#1A1A1A] dark:text-white font-medium' : 'text-[#8E8E8A]'}>Scan Photo</Text>
+                  <Text className={itemMode === 'photo' ? 'text-[#1A1A1A] dark:text-white font-medium' : 'text-[#8E8E8A]'}>Scan Photos</Text>
                 </TouchableOpacity>
               </View>
               )}
 
-              {itemMode === 'photo' && bulkItems.length === 0 && (
+              {itemMode === 'photo' && (
                 <View className="mb-5">
+                  {reviewItems.length === 0 && !isAnalyzingImage && (
+                    <Text className="text-xs text-[#8E8E8A] mb-3 text-center">
+                      Pick up to {MAX_PHOTOS_PER_SCAN} photos from your gallery — each garment is detected automatically.
+                    </Text>
+                  )}
                   {isAnalyzingImage ? (
-                    <View className="py-4 rounded-xl items-center bg-gray-300">
-                      <ActivityIndicator color="white" />
+                    <View className="py-4 rounded-xl items-center bg-[#F8F7F4] dark:bg-[#2A2A2A]">
+                      <ActivityIndicator color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} />
+                      <Text className="text-xs text-[#8E8E8A] mt-2">
+                        {scanProgress ? `Scanning photos… ${scanProgress.done}/${scanProgress.total}` : 'Scanning photos…'}
+                      </Text>
                     </View>
                   ) : (
                     <View className="flex-row gap-3">
@@ -1619,17 +1771,104 @@ export default function AppScreen() {
                         className="flex-1 py-4 rounded-xl items-center justify-center flex-row gap-2 bg-[#F8F7F4] dark:bg-[#2A2A2A]"
                       >
                         <ImageIcon color={nativeColorScheme === 'dark' ? 'white' : '#1A1A1A'} size={20} />
-                        <Text className="text-[#1A1A1A] dark:text-white font-medium">Gallery</Text>
+                        <Text className="text-[#1A1A1A] dark:text-white font-medium">{reviewItems.length ? 'Add more' : 'Gallery'}</Text>
                       </TouchableOpacity>
                     </View>
                   )}
                   {imageError ? (
                     <Text className="text-red-500 text-xs mt-2 text-center">{imageError}</Text>
                   ) : null}
+
+                  {reviewItems.length > 0 && (
+                    <View className="mt-5">
+                      <Text className="text-[10px] uppercase font-bold text-[#8E8E8A] mb-3">
+                        Review {reviewItems.length} item{reviewItems.length > 1 ? 's' : ''} before saving
+                      </Text>
+                      {reviewItems.map((item) => (
+                        <View key={item.key} className="flex-row p-3 mb-3 rounded-2xl border border-[#E5E5E1] dark:border-gray-800">
+                          {item.image ? (
+                            <Image source={{ uri: item.image }} className="w-20 h-24 rounded-xl mr-3 bg-[#F8F7F4] dark:bg-[#2A2A2A]" resizeMode="cover" />
+                          ) : (
+                            <View className="w-20 h-24 rounded-xl mr-3 bg-[#F8F7F4] dark:bg-[#2A2A2A]" />
+                          )}
+                          <View className="flex-1">
+                            <View className="flex-row items-center">
+                              <TextInput
+                                value={item.name}
+                                onChangeText={(t) => updateReviewItem(item.key, { name: t })}
+                                placeholder="Name"
+                                placeholderTextColor="#8E8E8A"
+                                className={`flex-1 bg-[#F8F7F4] dark:bg-[#2A2A2A] p-2 rounded-lg text-sm dark:text-white ${item.name.trim() ? '' : 'border border-red-400'}`}
+                              />
+                              <TouchableOpacity onPress={() => removeReviewItem(item.key)} className="p-2 ml-1">
+                                <Trash2 color="#8E8E8A" size={16} />
+                              </TouchableOpacity>
+                            </View>
+                            <TextInput
+                              value={item.color}
+                              onChangeText={(t) => updateReviewItem(item.key, { color: t })}
+                              placeholder="Color"
+                              placeholderTextColor="#8E8E8A"
+                              className={`bg-[#F8F7F4] dark:bg-[#2A2A2A] p-2 rounded-lg text-sm dark:text-white mt-2 ${item.color.trim() ? '' : 'border border-red-400'}`}
+                            />
+                            <View className="flex-row flex-wrap mt-2">
+                              {(['top', 'bottom', 'shoes', 'accessory'] as ItemType[]).map((t) => (
+                                <TouchableOpacity
+                                  key={t}
+                                  onPress={() => updateReviewItem(item.key, { type: t })}
+                                  className={`px-2 py-1 mr-1 mb-1 rounded-md ${item.type === t ? 'bg-[#1A1A1A] dark:bg-white' : 'bg-[#F8F7F4] dark:bg-[#2A2A2A]'}`}
+                                >
+                                  <Text className={`text-[11px] ${item.type === t ? 'text-white dark:text-black' : 'text-[#8E8E8A]'}`}>{t}</Text>
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                            <View className="flex-row flex-wrap">
+                              {(['casual', 'smart casual', 'formal'] as Formality[]).map((f) => (
+                                <TouchableOpacity
+                                  key={f}
+                                  onPress={() => updateReviewItem(item.key, { formality: f })}
+                                  className={`px-2 py-1 mr-1 mb-1 rounded-md ${item.formality === f ? 'bg-[#1A1A1A] dark:bg-white' : 'bg-[#F8F7F4] dark:bg-[#2A2A2A]'}`}
+                                >
+                                  <Text className={`text-[11px] ${item.formality === f ? 'text-white dark:text-black' : 'text-[#8E8E8A]'}`}>{f}</Text>
+                                </TouchableOpacity>
+                              ))}
+                            </View>
+                          </View>
+                        </View>
+                      ))}
+                      <TouchableOpacity
+                        onPress={saveReviewItems}
+                        disabled={isSavingBulk || isAnalyzingImage || reviewItems.some((i) => !i.name.trim() || !i.color.trim())}
+                        className={`py-4 rounded-xl items-center mt-2 ${isSavingBulk || isAnalyzingImage || reviewItems.some((i) => !i.name.trim() || !i.color.trim()) ? 'bg-gray-300' : 'bg-[#1A1A1A] dark:bg-white'}`}
+                      >
+                        {isSavingBulk ? (
+                          <ActivityIndicator color={nativeColorScheme === 'dark' ? 'black' : 'white'} />
+                        ) : (
+                          <Text className="text-white dark:text-black font-medium text-lg">Save all {reviewItems.length} to Wardrobe</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  )}
                 </View>
               )}
 
-              {selectedImage && <Image source={{ uri: selectedImage }} className="w-full h-48 rounded-2xl mb-5" resizeMode="cover" />}
+              {itemMode === 'manual' && (
+              <>
+              <View className="flex-row items-center mb-5">
+                {newItem.image ? (
+                  <Image source={{ uri: newItem.image }} className="w-16 h-20 rounded-xl mr-4 bg-[#F8F7F4] dark:bg-[#2A2A2A]" resizeMode="cover" />
+                ) : (
+                  <View className="w-16 h-20 rounded-xl mr-4 bg-[#F8F7F4] dark:bg-[#2A2A2A] items-center justify-center">
+                    <Shirt color="#8E8E8A" size={22} />
+                  </View>
+                )}
+                <View>
+                  <TouchableOpacity onPress={pickItemPhoto} className="px-4 py-2 rounded-xl border border-[#E5E5E1] dark:border-gray-800 self-start">
+                    <Text className="text-sm font-medium dark:text-white">{newItem.image ? 'Change photo' : 'Add photo'}</Text>
+                  </TouchableOpacity>
+                  <Text className="text-[10px] text-[#8E8E8A] mt-1">Shows the real item in outfits.</Text>
+                </View>
+              </View>
 
               <View className="mb-4">
                 <Text className="text-[10px] uppercase font-bold text-[#8E8E8A] mb-2">Item Name</Text>
@@ -1686,9 +1925,11 @@ export default function AppScreen() {
                 className={`py-4 rounded-xl items-center ${!newItem.name || !newItem.color || isAnalyzingImage ? 'bg-gray-300' : 'bg-[#1A1A1A] dark:bg-white'}`}
               >
                 <Text className="text-white dark:text-black font-medium text-lg">
-                  {editingItemId ? 'Save Changes' : bulkItems.length > 1 ? `Save & Next (${bulkItems.length - 1} left)` : 'Add to Wardrobe'}
+                  {editingItemId ? 'Save Changes' : 'Add to Wardrobe'}
                 </Text>
               </TouchableOpacity>
+              </>
+              )}
             </ScrollView>
           </View>
         </KeyboardAvoidingView>

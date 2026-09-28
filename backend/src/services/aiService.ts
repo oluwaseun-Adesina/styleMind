@@ -10,7 +10,8 @@ import { getEventForDate } from './eventService.js';
 import { buildStyleContext, AUTO_STYLE_PROMPT } from '../utils/styleContext.js';
 import { AppError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
-import type { OutfitSuggestionInput, AnalyzeItemInput, OutfitImageInput } from '../utils/schemas.js';
+import { BULK_ANALYZE_CONCURRENCY } from '../config/constants.js';
+import type { OutfitSuggestionInput, AnalyzeItemInput, AnalyzeItemsInput, OutfitImageInput } from '../utils/schemas.js';
 import type { ClothingItem } from '../../../shared/types';
 
 export type SuggestionContext = {
@@ -48,6 +49,9 @@ export type ItemAnalysisResult = {
 export type OutfitImageResult = {
   imageBase64: string;
   mimeType: string;
+  // 'reference' = drawn from the user's real item photos; the others are
+  // text-only and may not match the actual garments.
+  source: 'reference' | 'text' | 'huggingface' | 'pollinations';
 };
 
 export const findMatchingWardrobeItem = (
@@ -134,7 +138,7 @@ export const getOutfitSuggestion = async (
   const { prompt, auto, variety, lat, lon, localHour, localDate, lockedItemId } = input;
 
   try {
-    const wardrobe = await getWardrobeItems(userId);
+    const wardrobe = await getWardrobeItems(userId, { includeImages: false });
 
     if (!wardrobe.length) {
       throw new AppError('Add wardrobe items before requesting a suggestion', 400);
@@ -273,11 +277,11 @@ export const getOutfitImage = async (
     }
 
     // Resolve each suggested part back to the real wardrobe item so the image
-    // prompt carries its color and material description.
+    // prompt carries its color, material description and photo.
     const detailsFor = (type: 'top' | 'bottom' | 'shoes' | 'accessory', part: { name: string }) => {
       const matchedName = findMatchingWardrobeItem(wardrobe, type, part.name);
       const item = wardrobe.find((i) => i.type === type && i.name === matchedName);
-      return item ? { color: item.color, description: item.description } : undefined;
+      return item ? { color: item.color, description: item.description, image: item.image } : undefined;
     };
 
     return await generateOutfitImage(input.suggestion, {
@@ -316,6 +320,44 @@ export const analyzeClothingItem = async (
     logger.error('Image analysis failed', error as Error);
     throw new AppError('Failed to analyze image', 500);
   }
+};
+
+export type BulkAnalysisResult = {
+  results: Array<{ index: number; items: ItemAnalysis[]; error?: string }>;
+};
+
+/**
+ * Analyze several photos (bulk upload). Photos are processed a few at a time
+ * to stay within the model's rate limits, and each photo reports its own
+ * success or error so one bad photo doesn't fail the whole batch.
+ */
+export const analyzeClothingItems = async (input: AnalyzeItemsInput): Promise<BulkAnalysisResult> => {
+  const results: BulkAnalysisResult['results'] = new Array(input.images.length);
+  let next = 0;
+
+  const worker = async () => {
+    while (next < input.images.length) {
+      const index = next++;
+      const { imageBase64, mimeType } = input.images[index];
+      try {
+        const { items } = await analyzeItemImage(imageBase64, mimeType);
+        results[index] = { index, items };
+      } catch (error) {
+        logger.warn(`[BulkAnalyze] Photo ${index} failed: ${(error as Error)?.message || error}`);
+        results[index] = {
+          index,
+          items: [],
+          error: error instanceof Error ? error.message : 'Failed to analyze this photo',
+        };
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(BULK_ANALYZE_CONCURRENCY, input.images.length) }, worker)
+  );
+
+  return { results };
 };
 
 /**

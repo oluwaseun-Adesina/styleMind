@@ -55,3 +55,24 @@ export const analyzeItem = asyncHandler(async (req: Request, res: Response) => {
     data: result,
   });
 });
+
+/**
+ * POST /api/analyze-items
+ * Analyze several clothing photos in one request (bulk upload)
+ */
+export const analyzeItems = asyncHandler(async (req: Request, res: Response) => {
+  const result = await aiService.analyzeClothingItems(req.body);
+  logger.audit('ai.items_bulk_analyzed', {
+    userId: req.user!.userId,
+    ip: req.ip,
+    metadata: {
+      photos: result.results.length,
+      failed: result.results.filter((r) => r.error).length,
+    },
+  });
+
+  res.json({
+    success: true,
+    data: result,
+  });
+});

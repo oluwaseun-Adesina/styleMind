@@ -6,9 +6,9 @@ Your personal AI stylist. FitPick keeps track of your wardrobe and suggests comp
 
 ## Features
 
-- **Wardrobe management** — add items manually or snap a photo and let AI identify each garment (name, color, type, formality, and a material description used for image matching). Items can be edited any time.
+- **Wardrobe management** — add items manually, or bulk-upload up to 30 photos at once and let AI identify every garment (name, color, type, formality, and a material description). Review and edit the detected items in one list, then save them all together. Each item keeps a photo thumbnail. Items can be edited any time.
 - **Outfit suggestions** — daily auto-picks and on-demand looks for any occasion, weather- and season-aware, with up to 3 alternative looks to compare. Lock an item to build the outfit around it.
-- **Outfit images** — generate an editorial flat-lay of a suggested look, faithful to the real garments' colors and materials.
+- **Outfit images** — every suggestion is shown with the real photos of your items (nothing generated). Optionally generate an AI-styled flat-lay: your item photos are sent to Gemini as reference images, so it arranges the clothes you own rather than inventing them. If that fails, a text-only fallback is used and labelled as approximate.
 - **Lookbook** — save favorite outfits, mark them as worn, and get variety in future suggestions.
 - **Events** — plan upcoming occasions and get styled for them.
 - **Accounts** — email/password and Google sign-in, password reset via emailed code, and in-app account settings.
@@ -60,7 +60,8 @@ The web app reads the API location from `VITE_API_BASE_URL`; mobile uses `EXPO_P
 | `GOOGLE_ALLOWED_AUDIENCES` | – | Comma-separated extra client IDs (e.g. native Android/iOS) whose Google ID tokens are also accepted |
 | `OPENWEATHER_API_KEY` | – | Enables weather-aware outfit suggestions |
 | `RESEND_API_KEY` / `EMAIL_FROM` | – | Send welcome and password-reset emails via Resend; without a key, emails are logged to the console (dev only) |
-| `HF_TOKEN` | – | Hugging Face token, used as an image-generation fallback |
+| `HF_TOKEN` | – | Hugging Face token, used as a text-only image-generation fallback |
+| `GEMINI_IMAGE_GEN_MODEL` | – | Gemini model for outfit image generation (default `gemini-2.5-flash-image`) |
 | `PORT` | – | API port (default `8787`) |
 | `ALLOWED_ORIGINS` | – | Comma-separated CORS allow-list |
 | `NEW_RELIC_LICENSE_KEY` / `NEW_RELIC_APP_NAME` | – | Mirrors audit-trail entries and errors to New Relic; full APM tracing requires `npm run start:apm` |
@@ -92,19 +93,21 @@ Rate limits (per IP, configurable via `RATE_LIMIT_MAX` / `AUTH_RATE_LIMIT_MAX` /
 | Method & path | Body | Description |
 | --- | --- | --- |
 | `GET /` | – | List the user's wardrobe items |
-| `POST /` | `{ name, color, type, formality, description? }` | Add a wardrobe item |
-| `PUT /:id` | `{ name, color, type, formality, description? }` | Update a wardrobe item |
+| `POST /` | `{ name, color, type, formality, description?, image? }` | Add a wardrobe item |
+| `POST /bulk` | `{ items: [{ name, color, type, formality, description?, image? }] }` | Add up to 50 items in one request (all-or-nothing) |
+| `PUT /:id` | `{ name, color, type, formality, description?, image? }` | Update a wardrobe item (omitting `image` keeps the existing photo) |
 | `DELETE /:id` | – | Remove a wardrobe item |
 
-`type`: `top` \| `bottom` \| `shoes` \| `accessory`. `formality`: `casual` \| `smart casual` \| `formal`.
+`type`: `top` \| `bottom` \| `shoes` \| `accessory`. `formality`: `casual` \| `smart casual` \| `formal`. `image`: a JPEG/PNG/WebP data URL of at most 300,000 characters. Clients resize photos to about 400px before upload.
 
 #### AI — `/api` (all routes ✓ authenticated, stricter rate limit)
 
 | Method & path | Body | Description |
 | --- | --- | --- |
 | `POST /outfit-suggestion` | `{ prompt?, auto?, variety?, count?, lat?, lon?, localHour?, localDate?, lockedItemId? }` | Get one or more outfit suggestions from the wardrobe, optionally weather/season/time-aware and built around a locked item. `prompt` is required unless `auto` is `true`. |
-| `POST /outfit-image` | `{ suggestion: { occasion, top, bottom, shoes, accessory, stylistNote, wardrobeGap?, wardrobeGapSearchTerm? } }` | Generate an editorial flat-lay image for a suggested outfit |
+| `POST /outfit-image` | `{ suggestion: { occasion, top, bottom, shoes, accessory, stylistNote, wardrobeGap?, wardrobeGapSearchTerm? } }` | Generate an editorial flat-lay image for a suggested outfit. Returns `{ imageBase64, mimeType, source }`. `source` is `reference` when the image was drawn from the items' photos; `text`, `huggingface` or `pollinations` mean a text-only approximation |
 | `POST /analyze-item` | `{ imageBase64, mimeType, hint? }` | Identify a garment from a photo (name, color, type, formality, description). `mimeType`: `image/jpeg` \| `image/png` \| `image/webp` \| `image/heic` \| `image/heif` |
+| `POST /analyze-items` | `{ images: [{ imageBase64, mimeType }] }` | Bulk scan of up to 10 photos per request. Returns `{ results: [{ index, items, error? }] }`, one entry per photo in order, so a failed photo doesn't fail the batch |
 
 #### Events — `/api/events` (all routes ✓ authenticated)
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_BULK_ANALYZE_IMAGES, MAX_BULK_ITEMS, MAX_ITEM_IMAGE_CHARS } from '../config/constants.js';
 
 const objectIdSchema = z.string().regex(/^[a-f\d]{24}$/i, 'Invalid ID format');
 const shortTextSchema = (label: string, max: number) =>
@@ -67,6 +68,18 @@ export const wardrobeItemSchema = z.object({
     errorMap: () => ({ message: 'Formality must be one of: casual, smart casual, formal' }),
   }),
   description: z.string().trim().max(300, 'Description too long').optional(),
+  image: z
+    .string()
+    .max(MAX_ITEM_IMAGE_CHARS, 'Photo too large')
+    .regex(/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/, 'Photo must be a JPEG, PNG, or WebP data URL')
+    .optional(),
+});
+
+export const bulkWardrobeItemsSchema = z.object({
+  items: z
+    .array(wardrobeItemSchema)
+    .min(1, 'At least one item is required')
+    .max(MAX_BULK_ITEMS, `At most ${MAX_BULK_ITEMS} items per upload`),
 });
 
 export const wardrobeItemIdSchema = z.object({
@@ -120,12 +133,28 @@ export const eventIdSchema = z.object({
   id: objectIdSchema,
 });
 
+const analyzeImageMimeSchema = z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'], {
+  errorMap: () => ({ message: 'Image must be JPEG, PNG, WebP, or HEIC' }),
+});
+
 export const analyzeItemSchema = z.object({
   imageBase64: z.string().min(100, 'Image data is required').max(5_000_000, 'Image too large'),
-  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'], {
-    errorMap: () => ({ message: 'Image must be JPEG, PNG, WebP, or HEIC' }),
-  }),
+  mimeType: analyzeImageMimeSchema,
   hint: z.string().trim().max(500).optional(),
+});
+
+// Bulk scan: several photos per request. Clients should downscale more
+// aggressively here (~1024px) so a full batch stays under the body limit.
+export const analyzeItemsSchema = z.object({
+  images: z
+    .array(
+      z.object({
+        imageBase64: z.string().min(100, 'Image data is required').max(1_500_000, 'Image too large'),
+        mimeType: analyzeImageMimeSchema,
+      })
+    )
+    .min(1, 'At least one image is required')
+    .max(MAX_BULK_ANALYZE_IMAGES, `At most ${MAX_BULK_ANALYZE_IMAGES} photos per request`),
 });
 
 // Type exports
@@ -142,4 +171,6 @@ export type WardrobeItemInput = z.infer<typeof wardrobeItemSchema>;
 export type OutfitSuggestionInput = z.infer<typeof outfitSuggestionSchema>;
 export type OutfitImageInput = z.infer<typeof outfitImageSchema>;
 export type AnalyzeItemInput = z.infer<typeof analyzeItemSchema>;
+export type AnalyzeItemsInput = z.infer<typeof analyzeItemsSchema>;
+export type BulkWardrobeItemsInput = z.infer<typeof bulkWardrobeItemsSchema>;
 export type EventInput = z.infer<typeof eventSchema>;
