@@ -12,6 +12,15 @@ type EmailMessage = {
   html?: string;
 };
 
+// Escape user-supplied text before interpolating it into an HTML email body.
+export const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 export const sendEmail = async (message: EmailMessage): Promise<void> => {
   if (!env.RESEND_API_KEY) {
     // Dev: print the message (incl. reset codes) so the flow stays testable.
@@ -57,6 +66,6 @@ export const sendWelcomeEmail = async (to: string, name: string): Promise<void> 
     to,
     subject: 'Welcome to FitPick',
     text: `Hi ${name},\n\nWelcome to FitPick — your personal AI stylist. Add a few items to your wardrobe and we'll start suggesting outfits tuned to the occasion, weather, and what you've worn recently.\n\nHappy styling!`,
-    html: `<p>Hi ${name},</p><p>Welcome to FitPick — your personal AI stylist. Add a few items to your wardrobe and we'll start suggesting outfits tuned to the occasion, weather, and what you've worn recently.</p><p>Happy styling!</p>`,
+    html: `<p>Hi ${escapeHtml(name)},</p><p>Welcome to FitPick — your personal AI stylist. Add a few items to your wardrobe and we'll start suggesting outfits tuned to the occasion, weather, and what you've worn recently.</p><p>Happy styling!</p>`,
   });
 };
