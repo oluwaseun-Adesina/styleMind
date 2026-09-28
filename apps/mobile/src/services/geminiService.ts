@@ -1,4 +1,4 @@
-import { apiFetch } from "../firebase";
+import { apiFetch } from "../apiClient";
 import { EventRecord, OutfitImageResult, OutfitSuggestion, SavedOutfitRecord } from "../types";
 
 export async function getOutfitSuggestion(

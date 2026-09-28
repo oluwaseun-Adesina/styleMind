@@ -4,7 +4,7 @@ import * as Google from 'expo-auth-session/providers/google';
 import { makeRedirectUri, type AuthRequestPromptOptions, type AuthSessionResult } from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
 
-import { postJson, saveAuth } from '@/firebase';
+import { postJson, saveAuth } from '@/apiClient';
 
 WebBrowser.maybeCompleteAuthSession();
 

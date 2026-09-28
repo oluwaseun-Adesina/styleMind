@@ -11,6 +11,9 @@ coverage/
 test-results/
 playwright-report/
 graphify-out/
+backend/docs/IMAGE_GENERATION_MODELS.md
 
 # Stale root-owned backup dir (remove from disk with: sudo rm -rf backend/src/utils.nobody-backup-leftover)
 backend/src/utils.nobody-backup-leftover/
+backend/node_modules.stale-root/
+

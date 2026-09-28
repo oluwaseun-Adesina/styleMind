@@ -15,12 +15,12 @@ import {
   Plus, Trash2, Sparkles, Shirt, Footprints, Watch, Briefcase, 
   ChevronRight, X, LogIn, LogOut, User as UserIcon, Heart,
   Mail, Lock, Sun, Moon, LayoutGrid, Settings, KeyRound, ArrowLeft, Pencil,
-  Camera, Image as ImageIcon
+  Camera, Image as ImageIcon, Shield
 } from 'lucide-react-native';
 import { ClothingItem, OutfitSuggestion, ItemType, Formality, ItemAnalysis, SavedOutfitRecord, EventRecord } from '../types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getDailyOutfitSuggestion, getOutfitImage, getOutfitSuggestion, markOutfitWorn, getEvents, addEvent, removeEvent } from '../services/geminiService';
-import { apiFetch, ApiError, clearAuth, getToken, getUser, postJson, refreshSession, saveAuth, setAuthExpiredHandler } from '../firebase';
+import { apiFetch, ApiError, clearAuth, getToken, getUser, postJson, refreshSession, saveAuth, setAuthExpiredHandler } from '../apiClient';
 
 const DAILY_PICK_CACHE_KEY = 'dailyPickCache';
 const TODAYS_PLAN_KEY = 'todaysPlan';
@@ -392,7 +392,7 @@ export default function AppScreen() {
         setShowLocationHint(false);
         const location =
           (await Location.getLastKnownPositionAsync()) ??
-          (await Location.getCurrentPositionAsync({}));
+          (await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low }));
         return { lat: location?.coords.latitude, lon: location?.coords.longitude };
       }
       setShowLocationHint(true);
@@ -596,7 +596,7 @@ export default function AppScreen() {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status === 'granted') {
-          const location = await Location.getCurrentPositionAsync({});
+          const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Low });
           lat = location.coords.latitude;
           lon = location.coords.longitude;
         }
@@ -1528,7 +1528,20 @@ export default function AppScreen() {
                 </TouchableOpacity>
               </View>
 
-              <View className="border-t border-[#E5E5E1] dark:border-gray-800 pt-6 mt-8 mb-2">
+              <View className="border-t border-[#E5E5E1] dark:border-gray-800 pt-6 mt-8">
+                <TouchableOpacity
+                  onPress={() => WebBrowser.openBrowserAsync('https://fitpick-oluwaseun.netlify.app/privacy')}
+                  className="flex-row items-center justify-between py-2"
+                >
+                  <View className="flex-row items-center">
+                    <Shield color="#8E8E8A" size={18} />
+                    <Text className="text-sm ml-3 dark:text-white">Privacy Policy</Text>
+                  </View>
+                  <ChevronRight color="#8E8E8A" size={18} />
+                </TouchableOpacity>
+              </View>
+
+              <View className="border-t border-[#E5E5E1] dark:border-gray-800 pt-6 mt-2 mb-2">
                 <Text className="text-[10px] uppercase font-bold text-red-500 mb-2">Delete Account</Text>
                 <Text className="text-xs text-[#8E8E8A] mb-3">
                   Permanently removes your account, wardrobe, saved outfits and events. This cannot be undone.

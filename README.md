@@ -59,7 +59,7 @@ The web app reads the API location from `VITE_API_BASE_URL`; mobile uses `EXPO_P
 | `GOOGLE_CLIENT_ID` | ✓ | OAuth client ID for "Sign in with Google" |
 | `GOOGLE_ALLOWED_AUDIENCES` | – | Comma-separated extra client IDs (e.g. native Android/iOS) whose Google ID tokens are also accepted |
 | `OPENWEATHER_API_KEY` | – | Enables weather-aware outfit suggestions |
-| `RESEND_API_KEY` / `EMAIL_FROM` | – | Send password-reset codes by email; without a key, codes are logged to the console (dev only) |
+| `RESEND_API_KEY` / `EMAIL_FROM` | – | Send welcome and password-reset emails via Resend; without a key, emails are logged to the console (dev only) |
 | `HF_TOKEN` | – | Hugging Face token, used as an image-generation fallback |
 | `PORT` | – | API port (default `8787`) |
 | `ALLOWED_ORIGINS` | – | Comma-separated CORS allow-list |
@@ -76,8 +76,8 @@ Rate limits (per IP, configurable via `RATE_LIMIT_MAX` / `AUTH_RATE_LIMIT_MAX` /
 
 | Method & path | Auth | Body | Description |
 | --- | --- | --- | --- |
-| `POST /google` | – | `{ token }` | Sign in/up with a Google ID token |
-| `POST /signup` | – | `{ email, password, name? }` | Create an account |
+| `POST /google` | – | `{ token }` | Sign in/up with a Google ID token (sends a welcome email on first sign-in) |
+| `POST /signup` | – | `{ email, password, name? }` | Create an account (sends a welcome email) |
 | `POST /login` | – | `{ email, password }` | Email/password sign-in |
 | `POST /refresh` | – | `{ refreshToken }` | Exchange a refresh token for a new access token |
 | `POST /forgot-password` | – | `{ email }` | Email a 6-digit reset code (logged to console without `RESEND_API_KEY`) |

@@ -190,12 +190,27 @@ export const getOutfitSuggestion = async (
         throw new AppError('AI response incomplete', 500);
       }
 
-      const pick = (type: string, raw?: { name?: string; reason?: string }) => ({
-        name: lockedItem?.type === type
-          ? lockedItem.name
-          : findMatchingWardrobeItem(wardrobe as any, type, raw?.name || ''),
-        reason: raw?.reason || '',
-      });
+      const pick = (type: string, raw?: { name?: string; reason?: string }) => {
+        if (lockedItem?.type === type) {
+          return {
+            name: lockedItem.name,
+            reason: raw?.reason || '',
+          };
+        }
+        const matchedName = findMatchingWardrobeItem(wardrobe as any, type, raw?.name || '');
+        const rawName = (raw?.name || '').trim().toLowerCase();
+        const cleanMatched = matchedName.trim().toLowerCase();
+        let reason = raw?.reason || '';
+        if (rawName && cleanMatched !== rawName && !cleanMatched.includes(rawName) && !rawName.includes(cleanMatched)) {
+          reason = reason
+            ? `${reason} (Selected ${matchedName} from your wardrobe)`
+            : `Selected ${matchedName} from your wardrobe`;
+        }
+        return {
+          name: matchedName,
+          reason,
+        };
+      };
 
       const mapped: OutfitSuggestion = {
         ...result,

@@ -6,18 +6,21 @@ import { User } from '../../models/User.js';
 import { Wardrobe } from '../../models/Wardrobe.js';
 import { SavedOutfit } from '../../models/SavedOutfit.js';
 import { Event } from '../../models/Event.js';
-import { sendPasswordResetEmail } from '../../services/emailService.js';
+import { sendPasswordResetEmail, sendWelcomeEmail } from '../../services/emailService.js';
 
 vi.mock('../../services/emailService.js', () => ({
   sendPasswordResetEmail: vi.fn(async () => {}),
+  sendWelcomeEmail: vi.fn(async () => {}),
 }));
 
 const sendResetMock = vi.mocked(sendPasswordResetEmail);
+const sendWelcomeMock = vi.mocked(sendWelcomeEmail);
 
 beforeAll(startTestDb);
 afterAll(stopTestDb);
 afterEach(async () => {
   sendResetMock.mockClear();
+  sendWelcomeMock.mockClear();
   await clearDb();
 });
 

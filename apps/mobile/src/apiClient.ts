@@ -5,7 +5,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 WebBrowser.maybeCompleteAuthSession();
 
-// This is a simplified auth helper for the migration
 export const API_BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL || 'http://localhost:8787').replace(/\/+$/, '');
 
 export class ApiError extends Error {
@@ -31,10 +30,16 @@ export async function postJson<T>(path: string, body: unknown, timeoutMs = 30000
     });
 
     const rawText = await response.text();
-    const data = rawText ? JSON.parse(rawText) : null;
+    let data: any = null;
+    try {
+      data = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      data = null;
+    }
 
     if (!response.ok) {
-      throw new ApiError(data?.error || `Request failed with status ${response.status}.`, response.status);
+      const fallbackMsg = rawText && !rawText.startsWith('<') ? rawText : `Request failed with status ${response.status}.`;
+      throw new ApiError(data?.error || fallbackMsg, response.status);
     }
 
     return (data && typeof data === 'object' && 'data' in data ? data.data : data) as T;
@@ -175,9 +180,15 @@ export async function apiFetch<T>(
   }
 
   const rawText = await response.text();
-  const data = rawText ? JSON.parse(rawText) : null;
+  let data: any = null;
+  try {
+    data = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    data = null;
+  }
   if (!response.ok) {
-    throw new ApiError(data?.error || `Request failed with status ${response.status}.`, response.status);
+    const fallbackMsg = rawText && !rawText.startsWith('<') ? rawText : `Request failed with status ${response.status}.`;
+    throw new ApiError(data?.error || fallbackMsg, response.status);
   }
   return (data && typeof data === 'object' && 'data' in data ? data.data : data) as T;
 }

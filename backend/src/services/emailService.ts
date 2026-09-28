@@ -51,3 +51,12 @@ export const sendPasswordResetEmail = async (to: string, code: string): Promise<
     html: `<p>Your FitPick password reset code is:</p><p style="font-size:28px;font-weight:bold;letter-spacing:6px">${code}</p><p>It expires in 15 minutes. If you didn't request this, you can safely ignore this email.</p>`,
   });
 };
+
+export const sendWelcomeEmail = async (to: string, name: string): Promise<void> => {
+  await sendEmail({
+    to,
+    subject: 'Welcome to FitPick',
+    text: `Hi ${name},\n\nWelcome to FitPick — your personal AI stylist. Add a few items to your wardrobe and we'll start suggesting outfits tuned to the occasion, weather, and what you've worn recently.\n\nHappy styling!`,
+    html: `<p>Hi ${name},</p><p>Welcome to FitPick — your personal AI stylist. Add a few items to your wardrobe and we'll start suggesting outfits tuned to the occasion, weather, and what you've worn recently.</p><p>Happy styling!</p>`,
+  });
+};
