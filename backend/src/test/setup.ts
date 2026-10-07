@@ -9,6 +9,10 @@ process.env.MONGODB_URI = 'mongodb://127.0.0.1:27017/fitpick-test';
 process.env.GOOGLE_CLIENT_ID = 'web-client.apps.googleusercontent.com';
 process.env.GOOGLE_ALLOWED_AUDIENCES = 'android-client.apps.googleusercontent.com';
 
+// Force the console-log fallback in emailService — never let tests make a real
+// Resend API call, even if a developer has RESEND_API_KEY set in their local .env.
+process.env.RESEND_API_KEY = '';
+
 // Disable throttling so integration tests aren't rejected with 429.
 process.env.RATE_LIMIT_MAX = '100000';
 process.env.AUTH_RATE_LIMIT_MAX = '100000';

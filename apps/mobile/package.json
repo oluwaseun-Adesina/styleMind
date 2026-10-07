@@ -15,7 +15,6 @@
     "build:ios:local": "eas build --platform ios --profile local --local"
   },
   "dependencies": {
-    "@google/genai": "^1.46.0",
     "@react-native-async-storage/async-storage": "^2.2.0",
     "@react-navigation/bottom-tabs": "^7.15.5",
     "@react-navigation/elements": "^2.9.10",

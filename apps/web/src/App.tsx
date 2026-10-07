@@ -26,15 +26,33 @@ import {
   Pencil
 } from 'lucide-react';
 import { useGoogleLogin } from '@react-oauth/google';
-import { ClothingItem, OutfitSuggestion, ItemType, Formality, ItemAnalysis, SavedOutfitRecord, EventRecord } from './types';
+import { ClothingItem, OutfitSuggestion, ItemType, Formality, ItemAnalysis, SavedOutfitRecord, EventRecord, BulkAnalysisResult, OutfitImageResult } from './types';
 import { getDailyOutfitSuggestion, getOutfitImage, getOutfitSuggestion, markOutfitWorn, refreshSession, getEvents, addEvent, removeEvent } from './services/geminiService';
 import { apiFetch, apiJson, jsonHeaders } from './services/apiClient';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8787';
 const AMAZON_ASSOCIATE_TAG = import.meta.env.VITE_AMAZON_ASSOCIATE_TAG?.trim();
 
-const IMAGE_MAX_DIMENSION = 1280;
-const IMAGE_JPEG_QUALITY = 0.82;
+// Photos sent for AI analysis (bulk batches must fit the API body limit).
+const SCAN_MAX_DIMENSION = 1024;
+const SCAN_JPEG_QUALITY = 0.8;
+// Thumbnails stored on the wardrobe item (~25KB each).
+const THUMB_MAX_DIMENSION = 400;
+const THUMB_JPEG_QUALITY = 0.72;
+const MAX_PHOTOS_PER_SCAN = 30;
+const SCAN_BATCH_SIZE = 10; // backend max photos per /api/analyze-items call
+const BULK_SAVE_CHUNK = 20;
+
+// A scanned garment awaiting review before it's saved to the wardrobe.
+interface ReviewItem {
+  key: string;
+  name: string;
+  color: string;
+  type: ItemType;
+  formality: Formality;
+  description: string;
+  image?: string;
+}
 
 const buildAmazonAffiliateUrl = (searchTerm: string) => {
   const url = new URL('https://www.amazon.com/s');
@@ -73,7 +91,10 @@ export default function App() {
   const [lockedItemId, setLockedItemId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'stylist' | 'lookbook'>('stylist');
   const [savedOutfits, setSavedOutfits] = useState<SavedOutfitRecord[]>([]);
-  const [bulkItems, setBulkItems] = useState<ItemAnalysis[]>([]);
+  const [reviewItems, setReviewItems] = useState<ReviewItem[]>([]);
+  const [scanProgress, setScanProgress] = useState<{ done: number; total: number } | null>(null);
+  const [isSavingBulk, setIsSavingBulk] = useState(false);
+  const [outfitImageSource, setOutfitImageSource] = useState<OutfitImageResult['source']>();
   const [isAutoStyling, setIsAutoStyling] = useState(false);
   const [isDailyPick, setIsDailyPick] = useState(false);
   const [todaysPlan, setTodaysPlan] = useState(() => localStorage.getItem('todaysPlan') || '');
@@ -546,84 +567,175 @@ export default function App() {
     sessionStorage.removeItem('user');
   };
 
-  const getUploadPayload = async (file: File) => {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => reject(new Error('Could not read the selected image.'));
-      reader.readAsDataURL(file);
-    });
+  // Load a picked file and re-encode it as a downscaled JPEG data URL.
+  const resizeImageFile = async (file: File, maxDimension: number, quality: number): Promise<string> => {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+        img.src = objectUrl;
+      });
 
-    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('Could not process the selected image.'));
-      img.src = dataUrl;
-    });
+      const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(image.width * scale));
+      canvas.height = Math.max(1, Math.round(image.height * scale));
 
-    const scale = Math.min(1, IMAGE_MAX_DIMENSION / Math.max(image.width, image.height));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(image.width * scale));
-    canvas.height = Math.max(1, Math.round(image.height * scale));
+      const context = canvas.getContext('2d');
+      if (!context) {
+        throw new Error('Could not prepare the selected image.');
+      }
 
-    const context = canvas.getContext('2d');
-    if (!context) {
-      throw new Error('Could not prepare the selected image.');
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', quality);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
     }
-
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-
-    const compressedDataUrl = canvas.toDataURL('image/jpeg', IMAGE_JPEG_QUALITY);
-    const [, base64 = ''] = compressedDataUrl.split(',');
-
-    return {
-      base64,
-      mimeType: 'image/jpeg',
-    };
   };
 
+  const toReviewItem = (item: ItemAnalysis, image?: string): ReviewItem => ({
+    key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    name: item.name,
+    color: item.color,
+    type: item.type,
+    formality: item.formality,
+    description: item.description || '',
+    image,
+  });
+
+  // Bulk scan: every picked photo is analysed (in batches the backend accepts)
+  // and each detected garment becomes an editable card, carrying a thumbnail
+  // of the photo it came from.
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !token) return;
+    const files = Array.from(e.target.files || []).slice(0, MAX_PHOTOS_PER_SCAN);
+    e.target.value = ''; // allow picking the same files again
+    if (!files.length || !token) return;
 
     setIsScanning(true);
     setScanError('');
-    setBulkItems([]);
+    setScanProgress({ done: 0, total: files.length });
+    const failures: string[] = [];
 
     try {
-      const { base64, mimeType } = await getUploadPayload(file);
+      for (let start = 0; start < files.length; start += SCAN_BATCH_SIZE) {
+        const batch = files.slice(start, start + SCAN_BATCH_SIZE);
+        const prepared = await Promise.all(
+          batch.map(async (file) => {
+            try {
+              const scan = await resizeImageFile(file, SCAN_MAX_DIMENSION, SCAN_JPEG_QUALITY);
+              const thumb = await resizeImageFile(file, THUMB_MAX_DIMENSION, THUMB_JPEG_QUALITY);
+              return { file, scan, thumb };
+            } catch (err) {
+              failures.push(err instanceof Error ? err.message : `Could not read ${file.name}.`);
+              return null;
+            }
+          })
+        );
+        const ready = prepared.filter((p): p is NonNullable<typeof p> => Boolean(p));
 
-      const response = await apiFetch('/api/analyze-item', {
-        method: 'POST',
-        headers: jsonHeaders,
-        body: JSON.stringify({ imageBase64: base64, mimeType }),
-      });
+        if (ready.length) {
+          try {
+            const { results } = await apiJson<BulkAnalysisResult>('/api/analyze-items', {
+              method: 'POST',
+              headers: jsonHeaders,
+              body: JSON.stringify({
+                images: ready.map((p) => ({ imageBase64: p.scan.split(',')[1], mimeType: 'image/jpeg' })),
+              }),
+            });
+            const found: ReviewItem[] = [];
+            for (const result of results) {
+              const source = ready[result.index];
+              if (!source) continue;
+              if (result.error || !result.items.length) {
+                failures.push(`${source.file.name}: ${result.error || 'no clothing detected'}`);
+                continue;
+              }
+              found.push(...result.items.map((item) => toReviewItem(item, source.thumb)));
+            }
+            setReviewItems((prev) => [...prev, ...found]);
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : 'analysis failed';
+            ready.forEach((p) => failures.push(`${p.file.name}: ${reason}`));
+          }
+        }
 
-      if (!response.ok) {
-        const error = await response.json().catch(() => null);
-        throw new Error(error?.error || 'Failed to analyze image');
+        setScanProgress({ done: Math.min(start + batch.length, files.length), total: files.length });
       }
-
-      const responseJson = await response.json();
-      const data = responseJson?.data ?? responseJson;
-      const items = data.items as ItemAnalysis[];
-      
-      if (items && items.length > 0) {
-        setBulkItems(items);
-        setNewItem({
-          name: items[0].name,
-          color: items[0].color,
-          type: items[0].type,
-          formality: items[0].formality,
-          description: items[0].description,
-        });
-      }
-    } catch (err) {
-      setScanError(err instanceof Error ? err.message : 'Failed to analyze image. Please try again or enter manually.');
-      console.error(err);
     } finally {
+      if (failures.length) {
+        setScanError(`${failures.length} photo${failures.length > 1 ? 's' : ''} couldn't be scanned — ${failures.join('; ')}`);
+      }
+      setScanProgress(null);
       setIsScanning(false);
     }
+  };
+
+  const updateReviewItem = (key: string, patch: Partial<ReviewItem>) => {
+    setReviewItems((prev) => prev.map((item) => (item.key === key ? { ...item, ...patch } : item)));
+  };
+
+  const removeReviewItem = (key: string) => {
+    setReviewItems((prev) => prev.filter((item) => item.key !== key));
+  };
+
+  const saveReviewItems = async () => {
+    if (!reviewItems.length || reviewItems.some((i) => !i.name.trim() || !i.color.trim())) return;
+    setIsSavingBulk(true);
+    setScanError('');
+    const pending = [...reviewItems];
+
+    try {
+      while (pending.length) {
+        const chunk = pending.slice(0, BULK_SAVE_CHUNK);
+        const saved = await apiJson<ClothingItem[]>('/api/wardrobes/bulk', {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            items: chunk.map((item) => ({
+              name: item.name.trim(),
+              color: item.color.trim(),
+              type: item.type,
+              formality: item.formality,
+              ...(item.description.trim() ? { description: item.description.trim() } : {}),
+              ...(item.image ? { image: item.image } : {}),
+            })),
+          }),
+        });
+        pending.splice(0, chunk.length);
+        setWardrobe((prev) => [...prev, ...saved]);
+        // Drop saved cards so a later failure only leaves the unsaved ones.
+        setReviewItems([...pending]);
+      }
+      closeItemModal();
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : 'Could not save the items. Please try again.');
+    } finally {
+      setIsSavingBulk(false);
+    }
+  };
+
+  // Attach a photo to a manually added / edited item (no AI analysis).
+  const handleItemPhotoChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const image = await resizeImageFile(file, THUMB_MAX_DIMENSION, THUMB_JPEG_QUALITY);
+      setNewItem((prev) => ({ ...prev, image }));
+    } catch (err) {
+      setScanError(err instanceof Error ? err.message : 'Could not read that photo.');
+    }
+  };
+
+  // Look up the photo of the wardrobe item a suggestion refers to.
+  const findItemImage = (type: ItemType, name: string) => {
+    const clean = name.trim().toLowerCase();
+    const ofType = wardrobe.filter((i) => i.type === type);
+    return (
+      ofType.find((i) => i.name === name) ?? ofType.find((i) => i.name.trim().toLowerCase() === clean)
+    )?.image;
   };
 
   const handleGetSuggestion = async () => {
@@ -661,6 +773,7 @@ export default function App() {
     try {
       const result = await getOutfitImage(suggestion);
       setOutfitImageUrl(`data:${result.mimeType};base64,${result.imageBase64}`);
+      setOutfitImageSource(result.source);
     } catch (error) {
       setOutfitImageError(error instanceof Error ? error.message : 'Failed to generate outfit image.');
     } finally {
@@ -692,10 +805,11 @@ export default function App() {
       type: item.type,
       formality: item.formality,
       description: item.description,
+      image: item.image,
     });
     setItemMode('manual');
     setScanError('');
-    setBulkItems([]);
+    setReviewItems([]);
     setIsAddingItem(true);
   };
 
@@ -703,7 +817,8 @@ export default function App() {
     setIsAddingItem(false);
     setItemMode('manual');
     setScanError('');
-    setBulkItems([]);
+    setReviewItems([]);
+    setScanProgress(null);
     setEditingItemId(null);
     setNewItem({ type: 'top', formality: 'casual' });
   };
@@ -717,6 +832,7 @@ export default function App() {
           type: newItem.type as ItemType,
           formality: newItem.formality as Formality,
           ...(newItem.description?.trim() ? { description: newItem.description.trim() } : {}),
+          ...(newItem.image ? { image: newItem.image } : {}),
         };
 
         if (editingItemId) {
@@ -744,24 +860,7 @@ export default function App() {
           const responseJson = await res.json();
           const addedItem = responseJson?.data ?? responseJson;
           setWardrobe([...wardrobe, addedItem]);
-          
-          if (bulkItems.length > 1) {
-            const remaining = bulkItems.slice(1);
-            setBulkItems(remaining);
-            setNewItem({
-              name: remaining[0].name,
-              color: remaining[0].color,
-              type: remaining[0].type,
-              formality: remaining[0].formality,
-              description: remaining[0].description,
-            });
-          } else {
-            setBulkItems([]);
-            setNewItem({ type: 'top', formality: 'casual' });
-            setIsAddingItem(false);
-            setItemMode('manual');
-            setScanError('');
-          }
+          closeItemModal();
         }
       } catch (error) {
         console.error("Failed to add item", error);
@@ -1115,7 +1214,10 @@ export default function App() {
               </h2>
               <div className="space-y-2">
                 {wardrobe.filter(i => i.type === type).map(item => (
-                  <div key={item.id} className="group flex items-center justify-between p-3 rounded-xl border border-transparent hover:border-[#E5E5E1] dark:hover:border-gray-800 hover:bg-[#FBFBFA] dark:hover:bg-[#2A2A2A] transition-all">
+                  <div key={item.id} className="group flex items-center justify-between gap-3 p-3 rounded-xl border border-transparent hover:border-[#E5E5E1] dark:hover:border-gray-800 hover:bg-[#FBFBFA] dark:hover:bg-[#2A2A2A] transition-all">
+                    {item.image && (
+                      <img src={item.image} alt="" className="w-10 h-10 rounded-lg object-cover shrink-0 bg-[#F8F7F4] dark:bg-[#2A2A2A]" />
+                    )}
                     <div className="flex-1 overflow-hidden">
                       <p className="text-sm font-medium truncate">{item.name}</p>
                       <p className="text-[10px] text-[#8E8E8A] uppercase tracking-wider">{item.color} • {item.formality}</p>
@@ -1347,31 +1449,38 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Virtual Canvas */}
-                  <div className="bg-white dark:bg-[#1E1E1E] border border-[#E5E5E1] dark:border-gray-800 rounded-[32px] p-8 shadow-sm">
-                    <div className="flex flex-col md:flex-row items-center justify-around gap-8">
+                  {/* Real-photo collage: the actual items, never generated */}
+                  <div className="bg-white dark:bg-[#1E1E1E] border border-[#E5E5E1] dark:border-gray-800 rounded-[32px] p-6 lg:p-8 shadow-sm">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 lg:gap-6">
                       {[
-                        { label: 'Top', name: suggestion.top.name, icon: <Shirt size={32} /> },
-                        { label: 'Bottom', name: suggestion.bottom.name, icon: <Briefcase size={32} /> },
-                        { label: 'Shoes', name: suggestion.shoes.name, icon: <Footprints size={32} /> },
-                        { label: 'Accessory', name: suggestion.accessory.name, icon: <Watch size={32} /> }
-                      ].map((item) => (
-                        <div key={item.label} className="flex flex-col items-center text-center max-w-[120px]">
-                          <div className="w-20 h-20 rounded-2xl bg-[#F8F7F4] dark:bg-[#2A2A2A] flex items-center justify-center text-[#1A1A1A] dark:text-white mb-4 border border-[#E5E5E1] dark:border-gray-800">
-                            {item.icon}
+                        { label: 'Top', type: 'top' as ItemType, name: suggestion.top.name, icon: <Shirt size={32} /> },
+                        { label: 'Bottom', type: 'bottom' as ItemType, name: suggestion.bottom.name, icon: <Briefcase size={32} /> },
+                        { label: 'Shoes', type: 'shoes' as ItemType, name: suggestion.shoes.name, icon: <Footprints size={32} /> },
+                        { label: 'Accessory', type: 'accessory' as ItemType, name: suggestion.accessory.name, icon: <Watch size={32} /> }
+                      ].map((item) => {
+                        const photo = findItemImage(item.type, item.name);
+                        return (
+                          <div key={item.label} className="flex flex-col items-center text-center">
+                            <div className="w-full aspect-[4/5] rounded-2xl bg-[#F8F7F4] dark:bg-[#2A2A2A] flex items-center justify-center text-[#1A1A1A] dark:text-white mb-3 border border-[#E5E5E1] dark:border-gray-800 overflow-hidden">
+                              {photo ? (
+                                <img src={photo} alt={item.name} className="w-full h-full object-cover" />
+                              ) : (
+                                item.icon
+                              )}
+                            </div>
+                            <span className="text-[9px] uppercase tracking-widest text-[#8E8E8A] font-bold mb-1">{item.label}</span>
+                            <p className="text-sm font-medium leading-tight">{item.name}</p>
                           </div>
-                          <span className="text-[9px] uppercase tracking-widest text-[#8E8E8A] font-bold mb-1">{item.label}</span>
-                          <p className="text-sm font-medium leading-tight">{item.name}</p>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
                   <div className="bg-white dark:bg-[#1E1E1E] border border-[#E5E5E1] dark:border-gray-800 rounded-[32px] p-6 shadow-sm">
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
                       <div>
-                        <h4 className="text-[10px] uppercase tracking-widest text-[#8E8E8A] font-bold mb-2">Visual Preview</h4>
-                        <p className="text-sm text-[#555552] dark:text-gray-400">Generate a flat-lay image of this outfit.</p>
+                        <h4 className="text-[10px] uppercase tracking-widest text-[#8E8E8A] font-bold mb-2">AI Styled Image</h4>
+                        <p className="text-sm text-[#555552] dark:text-gray-400">Generate an editorial flat-lay from your item photos.</p>
                       </div>
                       <button
                         onClick={handleGenerateOutfitImage}
@@ -1379,11 +1488,16 @@ export default function App() {
                         className="px-6 py-3 rounded-xl bg-[#1A1A1A] dark:bg-white text-white dark:text-black text-sm font-medium hover:opacity-90 disabled:opacity-50 transition-all flex items-center justify-center gap-2"
                       >
                         {isGeneratingOutfitImage ? <Loader2 className="animate-spin" size={18} /> : <Sparkles size={18} />}
-                        {outfitImageUrl ? 'Regenerate Image' : 'Generate Image'}
+                        {outfitImageUrl ? 'Regenerate' : 'Generate AI Image'}
                       </button>
                     </div>
                     {outfitImageError && (
                       <p className="mb-4 text-sm text-red-500">{outfitImageError}</p>
+                    )}
+                    {outfitImageUrl && outfitImageSource && outfitImageSource !== 'reference' && (
+                      <p className="mb-4 text-xs text-[#8E8E8A]">
+                        Approximate image — generated from text, so garments may differ from yours. Add photos to these items for an accurate result.
+                      </p>
                     )}
                     {outfitImageUrl && (
                       <img
@@ -1626,14 +1740,11 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white dark:bg-[#1E1E1E] rounded-[32px] p-8 w-full max-w-md shadow-2xl"
+              className={`bg-white dark:bg-[#1E1E1E] rounded-[32px] p-8 w-full shadow-2xl max-h-[90vh] overflow-y-auto ${reviewItems.length ? 'max-w-2xl' : 'max-w-md'}`}
             >
               <div className="flex justify-between items-center mb-6">
                 <div className="flex flex-col">
-                  <h3 className="text-2xl font-serif italic dark:text-white">{editingItemId ? 'Edit Item' : 'Add New Item'}</h3>
-                  {bulkItems.length > 0 && (
-                    <span className="text-[10px] uppercase font-bold text-[#8E8E8A] mt-1">Reviewing Scan: {bulkItems.length} items found</span>
-                  )}
+                  <h3 className="text-2xl font-serif italic dark:text-white">{editingItemId ? 'Edit Item' : itemMode === 'photo' ? 'Add from Photos' : 'Add New Item'}</h3>
                 </div>
                 <button onClick={closeItemModal} className="text-[#8E8E8A] hover:text-black dark:hover:text-white">
                   <X size={24} />
@@ -1652,32 +1763,137 @@ export default function App() {
                   onClick={() => setItemMode('photo')}
                   className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${itemMode === 'photo' ? 'bg-white dark:bg-[#1E1E1E] shadow-sm dark:text-white' : 'text-[#8E8E8A]'}`}
                 >
-                  Scan Photo
+                  Scan Photos
                 </button>
               </div>
               )}
 
-              {itemMode === 'photo' && bulkItems.length === 0 && (
-                <div className="mb-6">
-                  <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-[#E5E5E1] dark:border-gray-800 rounded-2xl cursor-pointer hover:bg-[#FBFBFA] dark:hover:bg-[#2A2A2A] transition-all relative overflow-hidden">
+              {itemMode === 'photo' && (
+                <div>
+                  <label className={`flex flex-col items-center justify-center w-full border-2 border-dashed border-[#E5E5E1] dark:border-gray-800 rounded-2xl cursor-pointer hover:bg-[#FBFBFA] dark:hover:bg-[#2A2A2A] transition-all relative overflow-hidden ${reviewItems.length ? 'h-20' : 'h-36'}`}>
                     {isScanning ? (
                       <div className="flex flex-col items-center gap-2">
                         <Loader2 className="animate-spin text-[#8E8E8A]" size={24} />
-                        <span className="text-xs text-[#8E8E8A]">Analyzing item...</span>
+                        <span className="text-xs text-[#8E8E8A]">
+                          {scanProgress ? `Scanning photos… ${scanProgress.done}/${scanProgress.total}` : 'Scanning photos…'}
+                        </span>
                       </div>
                     ) : (
-                      <div className="flex flex-col items-center gap-2">
-                        <Sparkles className="text-[#8E8E8A]" size={24} />
-                        <span className="text-xs text-[#8E8E8A]">Upload a photo to scan items</span>
+                      <div className="flex flex-col items-center gap-1 px-4 text-center">
+                        <Sparkles className="text-[#8E8E8A]" size={22} />
+                        <span className="text-xs text-[#8E8E8A]">
+                          {reviewItems.length ? 'Add more photos' : `Select up to ${MAX_PHOTOS_PER_SCAN} photos — each garment is detected automatically`}
+                        </span>
                       </div>
                     )}
-                    <input type="file" className="hidden" accept="image/*" onChange={handleFileChange} disabled={isScanning} />
+                    <input type="file" className="hidden" accept="image/*" multiple onChange={handleFileChange} disabled={isScanning || isSavingBulk} />
                   </label>
-                  {scanError && <p className="text-[10px] text-red-500 mt-2">{scanError}</p>}
+                  {scanError && <p className="text-xs text-red-500 mt-2">{scanError}</p>}
+
+                  {reviewItems.length > 0 && (
+                    <>
+                      <p className="text-[10px] uppercase tracking-widest font-bold text-[#8E8E8A] mt-6 mb-3">
+                        Review {reviewItems.length} item{reviewItems.length > 1 ? 's' : ''} before saving
+                      </p>
+                      <div className="space-y-3">
+                        {reviewItems.map((item) => (
+                          <div key={item.key} className="flex gap-3 p-3 rounded-2xl border border-[#E5E5E1] dark:border-gray-800">
+                            {item.image ? (
+                              <img src={item.image} alt="" className="w-20 h-24 rounded-xl object-cover shrink-0 bg-[#F8F7F4] dark:bg-[#2A2A2A]" />
+                            ) : (
+                              <div className="w-20 h-24 rounded-xl shrink-0 bg-[#F8F7F4] dark:bg-[#2A2A2A]" />
+                            )}
+                            <div className="flex-1 min-w-0 space-y-2">
+                              <div className="flex gap-2">
+                                <input
+                                  value={item.name}
+                                  onChange={(e) => updateReviewItem(item.key, { name: e.target.value })}
+                                  placeholder="Name"
+                                  aria-label="Item name"
+                                  className={`flex-1 min-w-0 p-2 text-sm rounded-lg border dark:bg-[#2A2A2A] dark:text-white focus:outline-none ${item.name.trim() ? 'border-[#E5E5E1] dark:border-gray-800' : 'border-red-400'}`}
+                                />
+                                <button
+                                  onClick={() => removeReviewItem(item.key)}
+                                  className="p-2 text-[#8E8E8A] hover:text-red-500 shrink-0"
+                                  title="Don't add this item"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+                              <div className="grid grid-cols-3 gap-2">
+                                <input
+                                  value={item.color}
+                                  onChange={(e) => updateReviewItem(item.key, { color: e.target.value })}
+                                  placeholder="Color"
+                                  aria-label="Color"
+                                  className={`min-w-0 p-2 text-sm rounded-lg border dark:bg-[#2A2A2A] dark:text-white focus:outline-none ${item.color.trim() ? 'border-[#E5E5E1] dark:border-gray-800' : 'border-red-400'}`}
+                                />
+                                <select
+                                  value={item.type}
+                                  onChange={(e) => updateReviewItem(item.key, { type: e.target.value as ItemType })}
+                                  aria-label="Type"
+                                  className="min-w-0 p-2 text-sm rounded-lg border border-[#E5E5E1] dark:border-gray-800 bg-white dark:bg-[#2A2A2A] dark:text-white"
+                                >
+                                  <option value="top">Top</option>
+                                  <option value="bottom">Bottom</option>
+                                  <option value="shoes">Shoes</option>
+                                  <option value="accessory">Accessory</option>
+                                </select>
+                                <select
+                                  value={item.formality}
+                                  onChange={(e) => updateReviewItem(item.key, { formality: e.target.value as Formality })}
+                                  aria-label="Formality"
+                                  className="min-w-0 p-2 text-sm rounded-lg border border-[#E5E5E1] dark:border-gray-800 bg-white dark:bg-[#2A2A2A] dark:text-white"
+                                >
+                                  <option value="casual">Casual</option>
+                                  <option value="smart casual">Smart Casual</option>
+                                  <option value="formal">Formal</option>
+                                </select>
+                              </div>
+                              <input
+                                value={item.description}
+                                onChange={(e) => updateReviewItem(item.key, { description: e.target.value })}
+                                placeholder="Material, texture, fit"
+                                aria-label="Description"
+                                maxLength={300}
+                                className="w-full p-2 text-xs rounded-lg border border-[#E5E5E1] dark:border-gray-800 dark:bg-[#2A2A2A] dark:text-white focus:outline-none"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        onClick={saveReviewItems}
+                        disabled={isSavingBulk || isScanning || reviewItems.some((i) => !i.name.trim() || !i.color.trim())}
+                        className="w-full bg-[#1A1A1A] dark:bg-white text-white dark:text-black py-4 rounded-xl font-medium mt-5 hover:opacity-90 transition-opacity disabled:opacity-50 flex items-center justify-center gap-2"
+                      >
+                        {isSavingBulk && <Loader2 className="animate-spin" size={18} />}
+                        Save all {reviewItems.length} to Wardrobe
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
 
+              {itemMode === 'manual' && (
               <div className="space-y-4">
+                <div className="flex items-center gap-4">
+                  {newItem.image ? (
+                    <img src={newItem.image} alt="" className="w-16 h-20 rounded-xl object-cover bg-[#F8F7F4] dark:bg-[#2A2A2A]" />
+                  ) : (
+                    <div className="w-16 h-20 rounded-xl bg-[#F8F7F4] dark:bg-[#2A2A2A] flex items-center justify-center text-[#8E8E8A]">
+                      <Shirt size={22} />
+                    </div>
+                  )}
+                  <div>
+                    <label className="inline-block px-4 py-2 rounded-xl border border-[#E5E5E1] dark:border-gray-800 text-sm font-medium cursor-pointer hover:bg-[#F8F7F4] dark:hover:bg-[#2A2A2A] dark:text-white">
+                      {newItem.image ? 'Change photo' : 'Add photo'}
+                      <input type="file" className="hidden" accept="image/*" onChange={handleItemPhotoChange} />
+                    </label>
+                    <p className="text-[10px] text-[#8E8E8A] mt-1">Shows the real item in outfits.</p>
+                  </div>
+                </div>
+                {scanError && <p className="text-xs text-red-500">{scanError}</p>}
                 <div>
                   <label className="text-[10px] uppercase tracking-widest font-bold text-[#8E8E8A] mb-1 block">Item Name</label>
                   <input 
@@ -1743,9 +1959,10 @@ export default function App() {
                   onClick={addItem}
                   className="w-full bg-[#1A1A1A] dark:bg-white text-white dark:text-black py-4 rounded-xl font-medium mt-4 hover:opacity-90 transition-opacity"
                 >
-                  {editingItemId ? 'Save Changes' : bulkItems.length > 1 ? `Save & Next (${bulkItems.length - 1} left)` : 'Add to Wardrobe'}
+                  {editingItemId ? 'Save Changes' : 'Add to Wardrobe'}
                 </button>
               </div>
+              )}
             </motion.div>
           </div>
         )}

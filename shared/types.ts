@@ -10,6 +10,9 @@ export interface ClothingItem {
   // Optional material/texture/detail description. Used to make AI outfit
   // images match the real garment (e.g. "ribbed cotton knit, oversized fit").
   description?: string;
+  // Small photo thumbnail as a data URL (data:image/jpeg;base64,...). Used for
+  // the wardrobe list, the real-photo outfit collage, and AI image references.
+  image?: string;
   uid?: string; // Optional user ID for Firestore
 }
 
@@ -59,6 +62,13 @@ export interface EventRecord {
 export interface OutfitImageResult {
   imageBase64: string;
   mimeType: string;
+  // 'reference' = generated from the user's real item photos. Anything else
+  // is text-only and only approximates the garments.
+  source?: 'reference' | 'text' | 'huggingface' | 'pollinations';
+}
+
+export interface BulkAnalysisResult {
+  results: Array<{ index: number; items: ItemAnalysis[]; error?: string }>;
 }
 
 export interface ItemAnalysis {

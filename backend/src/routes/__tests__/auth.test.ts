@@ -2,11 +2,20 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest
 import request from 'supertest';
 import app from '../../app.js';
 import { startTestDb, stopTestDb, clearDb } from '../../test/db.js';
+import { sendWelcomeEmail } from '../../services/emailService.js';
+
+vi.mock('../../services/emailService.js', () => ({
+  sendPasswordResetEmail: vi.fn(async () => {}),
+  sendWelcomeEmail: vi.fn(async () => {}),
+}));
+
+const sendWelcomeMock = vi.mocked(sendWelcomeEmail);
 
 beforeAll(startTestDb);
 afterAll(stopTestDb);
 afterEach(async () => {
   vi.restoreAllMocks();
+  sendWelcomeMock.mockClear();
   await clearDb();
 });
 
@@ -31,6 +40,11 @@ describe('POST /api/auth/signup', () => {
   it('rejects a short password', async () => {
     const res = await signup('x@example.com', 'short');
     expect(res.status).toBe(400);
+  });
+
+  it('sends a welcome email', async () => {
+    await signup('welcome@example.com', 'supersecret');
+    expect(sendWelcomeMock).toHaveBeenCalledWith('welcome@example.com', expect.any(String));
   });
 });
 
@@ -91,6 +105,19 @@ describe('POST /api/auth/google (audience verification)', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.user.email).toBe('victim@example.com');
     expect(res.body.data.token).toBeTruthy();
+  });
+
+  it('sends a welcome email on first sign-in but not on repeat sign-ins', async () => {
+    stubGoogle(
+      { aud: 'web-client.apps.googleusercontent.com', email: 'newgoogle@example.com', email_verified: true },
+      { email: 'newgoogle@example.com', email_verified: true }
+    );
+    await request(app).post('/api/auth/google').send({ token: 'ya29.first-sign-in' });
+    expect(sendWelcomeMock).toHaveBeenCalledWith('newgoogle@example.com', expect.any(String));
+    expect(sendWelcomeMock).toHaveBeenCalledTimes(1);
+
+    await request(app).post('/api/auth/google').send({ token: 'ya29.second-sign-in' });
+    expect(sendWelcomeMock).toHaveBeenCalledTimes(1);
   });
 
   it('accepts a token bound via azp when aud is absent', async () => {

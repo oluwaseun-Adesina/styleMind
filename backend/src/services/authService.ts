@@ -11,7 +11,7 @@ import { AppError } from '../utils/errors.js';
 import { env } from '../config/env.js';
 import { isAllowedAudience } from '../utils/audience.js';
 import { logger } from '../utils/logger.js';
-import { sendPasswordResetEmail } from './emailService.js';
+import { sendPasswordResetEmail, sendWelcomeEmail } from './emailService.js';
 import type {
   SignupInput,
   LoginInput,
@@ -26,7 +26,7 @@ import type {
 const JWT_SECRET = env.JWT_SECRET;
 const GOOGLE_CLIENT_ID = env.GOOGLE_CLIENT_ID;
 const SALT_ROUNDS = 10;
-const ACCESS_TOKEN_EXPIRY = '7d';
+const ACCESS_TOKEN_EXPIRY = '1h';
 const REFRESH_TOKEN_EXPIRY = '30d';
 
 // Every client ID whose tokens we trust. verifyIdToken accepts an array; the
@@ -203,6 +203,12 @@ export const googleAuth = async (input: GoogleAuthInput): Promise<AuthResult> =>
       picture: payload.picture,
     });
     await user.save();
+
+    try {
+      await sendWelcomeEmail(user.email, user.name || user.email.split('@')[0]);
+    } catch (err) {
+      logger.error('[Auth] Failed to send welcome email', err as Error);
+    }
   }
 
   return buildAuthResult(user);
@@ -229,6 +235,13 @@ export const signup = async (input: SignupInput): Promise<AuthResult> => {
       throw new AppError('User already exists', 409);
     }
     throw err;
+  }
+
+  try {
+    await sendWelcomeEmail(user.email, user.name || user.email.split('@')[0]);
+  } catch (err) {
+    // Don't fail account creation over a flaky email provider; just log.
+    logger.error('[Auth] Failed to send welcome email', err as Error);
   }
 
   return buildAuthResult(user);

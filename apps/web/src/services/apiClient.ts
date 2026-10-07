@@ -18,10 +18,17 @@ export async function refreshSession(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
   });
-  if (!response.ok) {
-    throw new Error('Session expired');
+  const text = await response.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
   }
-  return unwrap(await response.json());
+  if (!response.ok) {
+    throw new Error(json?.error || 'Session expired');
+  }
+  return unwrap(json);
 }
 
 async function doRefresh(): Promise<string | null> {
@@ -71,9 +78,15 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
 export async function apiJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await apiFetch(path, init);
   const text = await res.text();
-  const json = text ? JSON.parse(text) : null;
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
   if (!res.ok) {
-    throw new Error(json?.error || `Request failed (${res.status})`);
+    const fallbackMsg = text && !text.startsWith('<') ? text : `Request failed (${res.status})`;
+    throw new Error(json?.error || fallbackMsg);
   }
   return unwrap<T>(json);
 }

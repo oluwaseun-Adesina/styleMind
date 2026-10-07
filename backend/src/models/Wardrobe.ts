@@ -10,6 +10,10 @@ const WardrobeSchema = new mongoose.Schema(
     // Optional material/texture/detail description, used to make AI outfit
     // images match the real garment. Auto-filled by the photo scan.
     description: { type: String, trim: true, maxlength: 300 },
+    // Small JPEG/PNG/WebP thumbnail as a data URL (resized on the client).
+    // Shown in the wardrobe, used for the real-photo outfit collage, and sent
+    // as a reference image when generating AI outfit images.
+    image: { type: String, maxlength: 300_000 },
   },
   { timestamps: true }
 );

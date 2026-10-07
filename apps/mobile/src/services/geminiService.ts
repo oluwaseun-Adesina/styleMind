@@ -1,4 +1,4 @@
-import { apiFetch } from "../firebase";
+import { apiFetch } from "../apiClient";
 import { EventRecord, OutfitImageResult, OutfitSuggestion, SavedOutfitRecord } from "../types";
 
 export async function getOutfitSuggestion(
@@ -39,10 +39,15 @@ export async function getDailyOutfitSuggestion(
 }
 
 export async function getOutfitImage(suggestion: OutfitSuggestion): Promise<OutfitImageResult> {
-  return apiFetch<OutfitImageResult>('/api/outfit-image', {
-    method: 'POST',
-    body: JSON.stringify({ suggestion }),
-  });
+  // Image generation (especially with reference photos) can take a while.
+  return apiFetch<OutfitImageResult>(
+    '/api/outfit-image',
+    {
+      method: 'POST',
+      body: JSON.stringify({ suggestion }),
+    },
+    90000
+  );
 }
 
 export async function markOutfitWorn(outfitId: string): Promise<SavedOutfitRecord> {

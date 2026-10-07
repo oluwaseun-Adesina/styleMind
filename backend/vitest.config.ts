@@ -10,5 +10,6 @@ export default defineConfig({
     // Integration tests share an in-memory Mongo per file; run files sequentially
     // to keep memory use low and avoid port contention.
     fileParallelism: false,
+    include: ['src/**/*.test.ts'],
   },
 });

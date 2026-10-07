@@ -9,6 +9,7 @@ export type WardrobeItem = {
   type: string;
   formality: string;
   description?: string;
+  image?: string;
   uid: string;
 };
 
@@ -19,6 +20,7 @@ const toWardrobeItem = (item: {
   type: string;
   formality: string;
   description?: string | null;
+  image?: string | null;
   uid: { toString(): string };
 }): WardrobeItem => ({
   id: item._id.toString(),
@@ -27,14 +29,22 @@ const toWardrobeItem = (item: {
   type: item.type,
   formality: item.formality,
   description: item.description || undefined,
+  image: item.image || undefined,
   uid: item.uid.toString(),
 });
 
 /**
- * Get all wardrobe items for a user
+ * Get all wardrobe items for a user. Pass `includeImages: false` when the
+ * caller only needs text fields (e.g. building an AI prompt) to avoid loading
+ * every thumbnail.
  */
-export const getWardrobeItems = async (userId: string): Promise<WardrobeItem[]> => {
-  const items = await Wardrobe.find({ uid: userId });
+export const getWardrobeItems = async (
+  userId: string,
+  { includeImages = true }: { includeImages?: boolean } = {}
+): Promise<WardrobeItem[]> => {
+  const query = Wardrobe.find({ uid: userId });
+  if (!includeImages) query.select('-image');
+  const items = await query;
 
   return items.map(toWardrobeItem);
 };
@@ -57,6 +67,18 @@ export const addWardrobeItem = async (
 };
 
 /**
+ * Add several wardrobe items at once (bulk upload). All-or-nothing: the input
+ * is already validated, so a failure here is a server error, not bad data.
+ */
+export const addWardrobeItems = async (
+  userId: string,
+  inputs: WardrobeItemInput[]
+): Promise<WardrobeItem[]> => {
+  const created = await Wardrobe.insertMany(inputs.map((input) => ({ ...input, uid: userId })));
+  return created.map(toWardrobeItem);
+};
+
+/**
  * Update a wardrobe item (owner-scoped)
  */
 export const updateWardrobeItem = async (
@@ -64,12 +86,15 @@ export const updateWardrobeItem = async (
   itemId: string,
   input: WardrobeItemInput
 ): Promise<WardrobeItem> => {
-  const fields = {
+  const fields: Record<string, string> = {
     name: input.name,
     color: input.color,
     type: input.type,
     formality: input.formality,
   };
+  // A new photo replaces the old one; omitting it keeps the existing photo so
+  // text-only edits don't have to re-upload it.
+  if (input.image) fields.image = input.image;
 
   // An omitted/empty description clears the field rather than keeping stale
   // text — undefined values are stripped by Mongoose, so $unset explicitly.
